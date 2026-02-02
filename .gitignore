@@ -1,0 +1,17 @@
+# Ignore build directories in any lab folder
+lab*/build/
+
+# Ignore compiled images and binary blobs
+*.img
+*.bin
+*.elf
+*.o
+
+# Ignore Python cache if you run write.py
+__pycache__/
+*.py[cod]
+
+# Optional: If you want to keep the specific .dtb or .its files provided in the labs,
+# but ignore other generated binaries, you can use an exclamation mark to un-ignore them:
+!lab*/src/*.dtb
+!lab*/src/*.its
