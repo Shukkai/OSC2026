@@ -60,6 +60,7 @@ save_context:
     mv a0, sp
     call do_trap
 
+.global ret_from_exception
 ret_from_exception:
     ld s0,  8 * 32(sp)
     andi s0, s0, (1 << 8)

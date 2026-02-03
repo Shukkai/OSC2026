@@ -69,3 +69,100 @@ uint64_t get_pc() {
     asm volatile("auipc %0, 0" : "=r"(pc));
     return pc;
 }
+
+// Simple function to convert int/long to string
+void simple_itoa(long value, char *str, int base, int width) {
+    char temp[32];
+    int i = 0;
+    int is_neg = 0;
+    unsigned long uval = value;
+
+    if (value == 0) {
+        temp[i++] = '0';
+    } else {
+        if (base == 10 && value < 0) {
+            is_neg = 1;
+            uval = -value;
+        }
+        
+        while (uval != 0) {
+            int rem = uval % base;
+            temp[i++] = (rem > 9) ? (rem - 10) + 'a' : rem + '0';
+            uval /= base;
+        }
+    }
+
+    if (is_neg) {
+        temp[i++] = '-';
+    }
+
+    // Pad with zeros or spaces if width is specified
+    while (i < width) {
+        temp[i++] = '0'; // padding with 0
+    }
+
+    temp[i] = '\0';
+
+    // Reverse the string
+    int start = 0; 
+    int end = i - 1;
+    while (start < end) {
+        char t = temp[start];
+        temp[start] = temp[end];
+        temp[end] = t;
+        start++;
+        end--;
+    }
+    
+    // Copy to output
+    int j = 0;
+    while (temp[j]) {
+        *str++ = temp[j++];
+    }
+    *str = '\0';
+}
+
+// Minimal sprintf implementation
+// Supports: %d (int), %p (hex ptr), %s (string), %x (hex)
+void mini_sprintf(char *buf, const char *fmt, va_list args) {
+    char *str = buf;
+    const char *p;
+    
+    for (p = fmt; *p; p++) {
+        if (*p != '%') {
+            *str++ = *p;
+            continue;
+        }
+        
+        p++; // Skip '%'
+        
+        switch (*p) {
+            case 'd': {
+                int val = va_arg(args, int);
+                simple_itoa(val, str, 10, 0);
+                while (*str) str++;
+                break;
+            }
+            case 'p': // Fallthrough for pointer/hex
+            case 'x': {
+                long val = va_arg(args, long);
+                *str++ = '0'; *str++ = 'x'; // Add 0x prefix
+                simple_itoa(val, str, 16, 8); // Simple hex
+                while (*str) str++;
+                break;
+            }
+            case 's': {
+                char *s = va_arg(args, char*);
+                while (*s) {
+                    *str++ = *s++;
+                }
+                break;
+            }
+            default: // Unknown, just print literal
+                *str++ = '%';
+                *str++ = *p;
+                break;
+        }
+    }
+    *str = '\0';
+}

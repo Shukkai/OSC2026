@@ -31,10 +31,12 @@ struct task_struct {
     int counter;                 
     int priority;
     int preempt_count;           
-
+    int exit_code;
     struct list_head list;       
 };
-
+// Global Scheduler Variables
+extern int pid_counter;
+extern struct list_head runqueue; 
 extern struct task_struct *current;
 
 
@@ -50,4 +52,6 @@ void kthread_exit(void);
 
 void kill_zombies();
 void idle();
+// int do_fork();
+// void do_exit();
 #endif // _SCHED_H_

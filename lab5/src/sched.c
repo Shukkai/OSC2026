@@ -2,15 +2,15 @@
 #include "mm.h"
 #include "list.h"
 #include "printk.h"
+#include "string.h"
 
-// Global Scheduler Variables
-struct list_head runqueue;
-struct task_struct *current;
-static int pid_counter = 1;
+struct list_head runqueue;   
+struct task_struct *current;     
+int pid_counter = 1;            
 
 // Defined in entry.S
 extern void switch_to(struct thread_struct *prev, struct thread_struct *next);
-
+extern void ret_from_exception(void);
 // ====================================================================
 // Scheduler Core
 // ====================================================================
@@ -89,6 +89,10 @@ void schedule() {
         return;
     }
 
+    // Debug
+    // if (prev->pid != next->pid) {
+        // printk("[Sched] Switch: %d -> %d\n", prev->pid, next->pid);
+    // }
     // 3. Update States
     if (prev->state == TASK_RUNNING) {
         prev->state = TASK_READY;
@@ -159,7 +163,7 @@ void kill_zombies() {
             // kfree((void *)task->user_stack); // If you allocated user stack, free it too
             kfree(task);
             
-            printk("[Zombie] Killed PID %d\n", task->pid);
+            // printk("[Zombie] Killed PID %d\n", task->pid);
         }
     }
 }
@@ -176,3 +180,5 @@ void idle() {
         if (num_runnable_tasks() == 1) break; 
     }
 }
+
+

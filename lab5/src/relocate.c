@@ -74,7 +74,7 @@ uint64_t get_ram_top(void *dtb) {
                 ptr += root_sc;
                 
                 uint64_t end = base + size;
-                
+                uart_puts("[Reloc] Found RAM: "); uart_hex(base); uart_puts(" - "); uart_hex(end); uart_puts("\n");
                 // Track the highest memory address found
                 if (end > max_ram_end) {
                     max_ram_end = end;

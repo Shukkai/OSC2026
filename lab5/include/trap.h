@@ -35,12 +35,6 @@
 #define EXC_LOAD_PAGE_FAULT   13
 #define EXC_STORE_PAGE_FAULT  15
 
-/* ========================================================================= */
-/* SYSCALL NUMBERS                                                           */
-/* ========================================================================= */
-#define SYS_WRITE             64
-#define SYS_EXIT              93
-#define SYS_GETPID            172
 
 /* ========================================================================= */
 /* C-ONLY DEFINITIONS (Hidden from Assembly)                                 */

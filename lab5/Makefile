@@ -27,7 +27,8 @@ else
 endif
 
 # Flags
-CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer
+CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer -march=rv64gc
+# -march=rv64gc_zicbom
 
 # Source Discovery
 SRCS_C   = $(wildcard $(SRC_DIR)/*.c)
@@ -88,11 +89,11 @@ qemu_payload: CFLAGS += -D__QEMU__
 qemu_payload: clean $(OBJS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building Payload (QEMU Version)..."
-	# Generate linker script using QEMU Base
+# Generate linker script using QEMU Base
 	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
-	# Link
+# Link
 	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS)
-	# Binary
+# Binary
 	$(OBJCOPY) -O binary $(BUILD_DIR)/payload.elf $(BUILD_DIR)/payload.bin
 	@echo "-------------------------------------------------------"
 	@echo "QEMU Payload Generated: $(BUILD_DIR)/payload.bin"
@@ -104,8 +105,8 @@ qemu_payload: clean $(OBJS)
 qemu: CFLAGS += -D__QEMU__
 qemu: clean cpio qemu_payload $(OBJS)
 	@echo "Building Kernel ELF for QEMU (Direct Run)..."
-	# Re-link for the kernel elf used by QEMU command (can reuse payload logic or separate)
-	# This part creates the 'kernel.elf' QEMU loads initially
+# Re-link for the kernel elf used by QEMU command (can reuse payload logic or separate)
+# This part creates the 'kernel.elf' QEMU loads initially
 	$(CC) -E -P -x c -DKERNEL_BASE=$(QEMU_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
 	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS)
 	
@@ -115,7 +116,8 @@ qemu: clean cpio qemu_payload $(OBJS)
 	@echo "-------------------------------------------------------"
 	qemu-system-riscv64 -machine virt -bios default -nographic -serial pty \
 		-kernel $(BUILD_DIR)/kernel.elf \
-		-initrd $(BUILD_DIR)/initramfs.cpio
+		-initrd $(BUILD_DIR)/initramfs.cpio \
+		-device ramfb 
 
 # 2. Hardware Image
 image: CFLAGS += -D__OPI__

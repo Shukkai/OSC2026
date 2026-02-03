@@ -221,6 +221,11 @@ uint64_t fdt_get_uart_base(const void *fdt) {
                     strstr(compat, "snps,dw-apb-uart") ||
                     strstr(compat, "ky,pxa-uart")) {
                     
+                    const char *status = (const char *)fdt_getprop(fdt, offset, "status", &len);
+                    if (status && strcmp(status, "disabled") == 0) {
+                        // Skip this node, continue the while loop
+                        continue; 
+                    }
                     const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, offset, "reg", &len);
                     if (reg) {
                         /* Read 64-bit address (Big Endian -> Little Endian) */

@@ -12,6 +12,7 @@
 #include "task.h"
 #include "trap.h"
 #include "sched.h"
+#include "forktest.h"
 /* Access global variables defined in kernel.c */
 extern unsigned long boot_cpu_hartid;
 extern unsigned long DTB_BASE;
@@ -31,11 +32,9 @@ void foo() {
 void demo_sched() {
     uart_puts("\n=== SCHEDULER TEST ===\n");
     uart_puts("Creating 3 threads (PID 1, 2, 3)...\n");
-
-    thread_create(foo, NULL);
-    thread_create(foo, NULL);
-    thread_create(foo, NULL);
-
+    for(int i = 0; i < 3; ++i) {
+        thread_create(foo, NULL);
+    }
     idle();
     uart_puts("All tasks done.\n");
 }
@@ -338,6 +337,9 @@ void exec_command(char *buf)
         }
         else if (!strcmp(arg, "sched")) {
             demo_sched();
+        }
+        else if (!strcmp(arg, "fork")) {
+            test_fork();
         }
         else {
             uart_puts("Unknown demo option: "); uart_puts(arg); uart_puts("\n");

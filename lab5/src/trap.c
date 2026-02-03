@@ -5,6 +5,8 @@
 #include "timer.h" 
 #include "plic.h"
 #include "task.h"
+#include "sys.h"
+#include "sched.h"
 /* ========================================================================= */
 /* VERIFICATION (Moved from kernel.c)                                        */
 /* ========================================================================= */
@@ -107,34 +109,111 @@ void do_trap(struct TrapFrame *tf) {
                  */
                 tf->sepc += 4;
 
-                // 2. Handle Syscall Number (passed in a7)
-                if (tf->a7 == SYS_WRITE) {
-                    // Example: sys_write (Not used by your current test.S but good to have)
-                    // char *str = (char *)tf->a0;
-                    // uart_puts(str);
-                }
-                else if (tf->a7 == SYS_EXIT) {
-                    printk("[Syscall] Program exited with code %d.\n", tf->a0);
-                    printk("System Halt. Reboot to restart.\n");
-                    while(1); // <--- Just hang here!
-                }
-                else {
-                    printk("[System Call] Unknown Syscall ID: %d\n", tf->a7);
-                    tf->a0 = -1; // Return Error Code
+                // 2. Dispatch Syscall based on a7
+                // Macros defined in sys.h
+                switch (tf->a7) {
+                    case SYS_GETPID: // 0
+                        tf->a0 = current->pid;
+                        break;
+
+                    case SYS_UART_READ: // 1
+                        // Basic wrapper for uart_getc (blocking for now)
+                        // In future labs, this should handle 'size' (a1)
+                        if (tf->a1 > 0) {
+                             char *buf = (char *)tf->a0;
+                             // Just read one char for simple shell support
+                             // (Or implement a loop to read a1 bytes)
+                             *buf = uart_getc(); 
+                             tf->a0 = 1; // Return 1 byte read
+                        } else {
+                             tf->a0 = 0;
+                        }
+                        break;
+
+                    case SYS_UART_WRITE: // 2
+                        // Used by user-space printk
+                        // a0 = buffer, a1 = size
+                        uart_puts((char *)tf->a0);
+                        tf->a0 = tf->a1; // Return count
+                        break;
+
+                    case SYS_EXEC: // 3
+                        // Lab 5: Load a new program
+                        printk("[Syscall] exec('%s') not implemented yet\n", (char *)tf->a0);
+                        tf->a0 = -1;
+                        break;
+
+                    case SYS_FORK: // 4
+                        tf->a0 = do_fork();
+                        break;
+
+                    case SYS_EXIT: // 5
+                        do_exit(tf->a0);
+                        break;
+
+                    case SYS_STOP: // 6
+                        // Often mapped to 'mbox_call' in some lab variations, 
+                        // or used to stop a specific process.
+                        printk("[Syscall] stop/mbox_call not implemented yet\n");
+                        tf->a0 = 0;
+                        break;
+
+                    case SYS_DISPLAY: // 7
+                        // Lab 8: Framebuffer display
+                        printk("[Syscall] display() not implemented yet\n");
+                        tf->a0 = 0;
+                        break;
+                    
+                    case SYS_USLEEP: // 8
+                        // Lab 6: Sleep for microseconds
+                         printk("[Syscall] usleep() not implemented yet\n");
+                        tf->a0 = 0;
+                        break;
+
+                    case SYS_SIGNAL: // 9
+                        // Lab 6: Register signal handler
+                        printk("[Syscall] signal() not implemented yet\n");
+                        tf->a0 = -1;
+                        break;
+
+                    case SYS_SIGRETURN: // 10
+                        // Lab 6: Return from signal handler
+                        printk("[Syscall] sigreturn() not implemented yet\n");
+                        tf->a0 = 0;
+                        break;
+
+                    case SYS_KILL: // 11
+                        // You need to implement do_kill(pid) in sched.c
+                        // tf->a0 = do_kill((int)tf->a0); 
+                        printk("[Syscall] kill(%d) stub - implement do_kill in sched.c!\n", (int)tf->a0);
+                        tf->a0 = -1; 
+                        break;
+
+                    case SYS_MMAP: // 12
+                         printk("[Syscall] mmap() not implemented yet\n");
+                         tf->a0 = 0;
+                         break;
+
+                    // --- File System Calls (Lab 7/8) ---
+                    case SYS_OPEN:  // 13
+                    case SYS_CLOSE: // 14
+                    case SYS_READ:  // 15
+                    case SYS_WRITE: // 16 (File write, distinct from UART)
+                    case SYS_MKDIR: // 17
+                    case SYS_MOUNT: // 18
+                    case SYS_CHDIR: // 19
+                    case SYS_LSEEK: // 20
+                    case SYS_IOCTL: // 21
+                        printk("[Syscall] FileSystem call #%d not implemented yet\n", tf->a7);
+                        tf->a0 = -1;
+                        break;
+
+                    default:
+                        printk("[Trap] Unknown Syscall ID: %d\n", tf->a7);
+                        tf->a0 = -1; // Return Error Code
+                        break;
                 }
                 break;
-
-            case EXC_INST_PAGE_FAULT:
-            case EXC_LOAD_PAGE_FAULT:
-            case EXC_STORE_PAGE_FAULT:
-                printk("!!! Page Fault at 0x%lx !!!\n", tf->stval);
-                while(1);
-
-            default:
-                printk("!!! PANIC: Unhandled Exception. Code: %d !!!\n", exception_code);
-                printk("scause: 0x%lx, sepc: 0x%lx, stval: 0x%lx\n", 
-                        tf->scause, tf->sepc, tf->stval);
-                while(1); 
-        }
+            }
     }
 }
