@@ -125,7 +125,11 @@ struct task_struct *thread_create(void (*start_routine)(void *), void *arg) {
     p->state = TASK_READY;
     p->priority = 1;
     p->counter = 0;
-
+    p->pending_signals = 0;
+    p->in_signal_handler = 0;
+    for (int i = 0; i < MAX_SIG; i++) {
+        p->signal_handler[i] = 0;
+    }
     // [FIX] Use 'kernel_stack' here too
     p->thread.sp = p->kernel_stack + 0x1000;
     
@@ -160,7 +164,7 @@ void kill_zombies() {
             // 2. Free Memory (Uncommented!)
             // Note: Verify your struct member names match exactly (kernel_stack vs stack)
             kfree((void *)task->kernel_stack); 
-            // kfree((void *)task->user_stack); // If you allocated user stack, free it too
+            kfree((void *)task->user_stack); // If you allocated user stack, free it too
             kfree(task);
             
             // printk("[Zombie] Killed PID %d\n", task->pid);
@@ -181,4 +185,30 @@ void idle() {
     }
 }
 
+// [Helper] Allocates a new task and its stacks. Returns NULL on failure.
+struct task_struct *task_alloc() {
+    struct task_struct *p = (struct task_struct *)kmalloc(sizeof(struct task_struct));
+    if (!p) return NULL;
 
+    p->kernel_stack = (uint64_t)kmalloc(PAGE_SIZE);
+    p->user_stack   = (uint64_t)kmalloc(PAGE_SIZE);
+
+    if (!p->kernel_stack || !p->user_stack) {
+        // Clean up partial allocations if OOM
+        if (p->kernel_stack) kfree((void*)p->kernel_stack);
+        if (p->user_stack) kfree((void*)p->user_stack);
+        kfree(p);
+        return NULL;
+    }
+    return p;
+}
+
+
+struct task_struct *find_task_by_pid(int pid) {
+    struct list_head *pos;
+    list_for_each(pos, &runqueue) {
+        struct task_struct *t = list_entry(pos, struct task_struct, list);
+        if (t->pid == pid) return t;
+    }
+    return NULL; // Process not found
+}

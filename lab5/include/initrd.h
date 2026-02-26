@@ -28,3 +28,5 @@ void initrd_list();
 void initrd_cat(const char *filename);
 
 void initrd_exec(const char *filename);
+
+void *initrd_find_file(const char *target_filename, unsigned long *out_filesize);

@@ -5,6 +5,10 @@
 #include "list.h"
 #include "trap.h"
 
+
+#define MAX_SIG 32
+#define SIGTERM 15  `
+
 struct thread_struct {
     uint64_t ra;
     uint64_t sp;
@@ -22,7 +26,7 @@ enum task_state {
 struct task_struct {
     struct thread_struct thread; 
 
-    uint64_t kernel_stack;       // <--- Note: name is 'kernel_stack'
+    uint64_t kernel_stack;
     uint64_t user_stack;         
     struct TrapFrame *tf;        
 
@@ -33,6 +37,12 @@ struct task_struct {
     int preempt_count;           
     int exit_code;
     struct list_head list;       
+
+    // Signal Management
+    void (*signal_handler[MAX_SIG])(void); // Array of handler functions
+    unsigned int pending_signals;          // Bitmask of waiting signals
+    struct TrapFrame saved_tf;             // Saved state before handling signal
+    int in_signal_handler;                 // Prevents nested signal loops
 };
 // Global Scheduler Variables
 extern int pid_counter;
@@ -52,6 +62,7 @@ void kthread_exit(void);
 
 void kill_zombies();
 void idle();
-// int do_fork();
-// void do_exit();
+// [Helper] Allocates a new task and its stacks. Returns NULL on failure.
+struct task_struct *task_alloc();
+struct task_struct *find_task_by_pid(int pid);
 #endif // _SCHED_H_

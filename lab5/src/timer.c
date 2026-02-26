@@ -7,6 +7,7 @@
 #include "utils.h" /* For kmalloc/kfree/bswap32 */
 #include "printk.h"
 #include "task.h"
+#include "sched.h"
 /* Global Timer Queue */
 static struct list_head timer_queue;
 static unsigned long timebase_freq; 
@@ -175,4 +176,22 @@ void sleep(int msec) {
     do {
         t2 = get_cycles();
     } while ((t2 - t1) < ticks_needed);
+}
+
+/* 7. Microsecond Sleep (Yielding) */
+void kernel_usleep(unsigned int usec) {
+    // 1. Get the current hardware cycle count
+    unsigned long start_time = get_cycles(); 
+    
+    // 2. Convert microseconds to hardware ticks
+    // (timebase_freq is ticks per second. Divide by 1,000,000 for microseconds)
+    unsigned long ticks_needed = ((unsigned long)usec * timebase_freq) / 1000000;
+    
+    // 3. Calculate exactly when we should wake up
+    unsigned long target_time = start_time + ticks_needed; 
+    
+    // 4. Yield the CPU until the target time is reached
+    while (get_cycles() < target_time) {
+        schedule(); 
+    }
 }

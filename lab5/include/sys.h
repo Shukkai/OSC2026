@@ -10,12 +10,12 @@
 #define SYS_EXEC        3
 #define SYS_FORK        4
 #define SYS_EXIT        5
-#define SYS_STOP        6
+#define SYS_KILL        6
 #define SYS_DISPLAY     7
 #define SYS_USLEEP      8
 #define SYS_SIGNAL      9
 #define SYS_SIGRETURN   10
-#define SYS_KILL        11
+#define SYS_SIG_KILL    11
 #define SYS_MMAP        12
 #define SYS_OPEN        13
 #define SYS_CLOSE       14
@@ -34,26 +34,24 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-// Type definitions for Signal Handling
-typedef void (*sighandler_t)(int);
+#include "trap.h" // For struct TrapFrame
 
 // 0. Process Control
 int getpid(void);
 int fork(void);
 void exit(int status);
 int exec(const char *path);
-int stop(long pid);
-int kill(long pid);
+int stop(int pid);
 int usleep(unsigned int usec);
-
+void display(unsigned int *bmp_image, unsigned int width, unsigned int height);
 // 1. I/O & UART
-long uart_read(char *buf, long count);
-long uart_write(const char *buf, long count);
+int uart_read(char *buf, int size);
+int uart_write(const char *buf, int size);
 
 // 2. Signals
-sighandler_t signal(int signum, sighandler_t handler);
-int sigreturn(void);
+long signal(int signum, void (*handler)(void));
+long sigreturn(void);
+int kill(int pid, int sig);
 
 // 3. File System (Lab 7/8)
 int open(const char *path, int flags);
@@ -72,6 +70,15 @@ void display(unsigned int *bmp_image, unsigned int width, unsigned int height);
 
 int do_fork();
 void do_exit(int status);
+long do_uart_read(char *buf, unsigned long size);
+long do_uart_write(const char *buf, unsigned long size);
+int do_exec(const char *path, struct TrapFrame *tf);
+void do_usleep(unsigned int usec);
+void do_display(unsigned int *bmp_image, unsigned int width, unsigned int height);
+
+long do_signal(int sig, void (*handler)(void));
+long do_kill(int pid, int sig);
+long do_sigreturn(struct TrapFrame *tf);
 #endif // __ASSEMBLER__
 
 #endif // _SYS_H_

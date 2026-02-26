@@ -33,3 +33,4 @@ unsigned long get_uptime(void);
 void timer_add(void (*callback)(void *), void *arg, int after);
 void set_timeout(const char *message, int after);
 void sleep(int msec);
+void kernel_usleep(unsigned int usec);

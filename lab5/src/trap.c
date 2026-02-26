@@ -64,6 +64,51 @@ void enable_external_interrupt()
     asm volatile("li t0, (1 << 9); csrs sie, t0" : : : "t0");
 }
 
+void check_signals(struct TrapFrame *tf) {
+    // Don't process signals if there is no current task, 
+    // or if we are already inside a signal handler!
+    if (!current || current->in_signal_handler) return;
+
+    if (current->pending_signals) {
+        for (int i = 0; i < MAX_SIG; i++) {
+            if (current->pending_signals & (1 << i)) {
+                // We found a pending signal! Clear the flag immediately.
+                current->pending_signals &= ~(1 << i); 
+
+                if (current->signal_handler[i]) {
+                    // --- A CUSTOM HANDLER EXISTS ---
+                    
+                    // 1. Save original context
+                    current->saved_tf = *tf;
+                    current->in_signal_handler = 1;
+
+                    // 2. Inject the Trampoline onto the User Stack
+                    tf->sp = (tf->sp - 8) & ~15UL; 
+                    uint32_t *trampoline = (uint32_t *)tf->sp;
+                    
+                    asm volatile("li t0, (1 << 18); csrs sstatus, t0;");
+                    trampoline[0] = 0x00a00893; // li a7, 10 (SYS_SIGRETURN)
+                    trampoline[1] = 0x00000073; // ecall
+                    asm volatile("li t0, (1 << 18); csrc sstatus, t0;");
+
+                    asm volatile("fence.i");
+
+                    // 3. Force CPU to jump to handler
+                    tf->sepc = (uint64_t)current->signal_handler[i];
+                    tf->ra = tf->sp;
+                    
+                } else {
+                    // --- NO HANDLER EXISTS ---
+                    // Make it conditional: Only kill the process if the signal is SIGTERM (15)!
+                    if (i == 15) {
+                        do_exit(0);
+                    }
+                }
+                break; // Process one signal per trap
+            }
+        }
+    }
+}
 
 /* ========================================================================= */
 /* TRAP DISPATCHER (Called from entry.S)                                     */
@@ -117,82 +162,91 @@ void do_trap(struct TrapFrame *tf) {
                         break;
 
                     case SYS_UART_READ: // 1
-                        // Basic wrapper for uart_getc (blocking for now)
-                        // In future labs, this should handle 'size' (a1)
-                        if (tf->a1 > 0) {
-                             char *buf = (char *)tf->a0;
-                             // Just read one char for simple shell support
-                             // (Or implement a loop to read a1 bytes)
-                             *buf = uart_getc(); 
-                             tf->a0 = 1; // Return 1 byte read
-                        } else {
-                             tf->a0 = 0;
-                        }
+                        tf->a0 = do_uart_read((char *)tf->a0, tf->a1);
                         break;
 
                     case SYS_UART_WRITE: // 2
-                        // Used by user-space printk
-                        // a0 = buffer, a1 = size
-                        uart_puts((char *)tf->a0);
-                        tf->a0 = tf->a1; // Return count
+                        tf->a0 = do_uart_write((const char *)tf->a0, tf->a1);
                         break;
 
                     case SYS_EXEC: // 3
-                        // Lab 5: Load a new program
-                        printk("[Syscall] exec('%s') not implemented yet\n", (char *)tf->a0);
-                        tf->a0 = -1;
+                        // tf->a0 contains the string pointer passed from user space
+                        tf->a0 = do_exec((const char *)tf->a0, tf);
                         break;
 
                     case SYS_FORK: // 4
+                        // uart_puts("do fork() called from syscall handler\n");
                         tf->a0 = do_fork();
                         break;
 
                     case SYS_EXIT: // 5
+                        // uart_puts("\n>>> SUCCESS: User Program called SYS_EXIT! <<<\n");
                         do_exit(tf->a0);
                         break;
 
-                    case SYS_STOP: // 6
-                        // Often mapped to 'mbox_call' in some lab variations, 
-                        // or used to stop a specific process.
-                        printk("[Syscall] stop/mbox_call not implemented yet\n");
-                        tf->a0 = 0;
+
+                    case SYS_KILL: // 6
+                        // The 'stop' command: Forcefully terminate the process immediately!
+                        {
+                            struct task_struct *target = find_task_by_pid((int)tf->a0);
+                            if (target) {
+                                // Bypass signals entirely and turn it into a Zombie!
+                                target->state = TASK_ZOMBIE; 
+                                tf->a0 = 0; // Success
+                            } else {
+                                tf->a0 = -1; // Process not found
+                            }
+                        }
                         break;
 
                     case SYS_DISPLAY: // 7
-                        // Lab 8: Framebuffer display
-                        printk("[Syscall] display() not implemented yet\n");
+                        // uart_puts("[Syscall] display() called\n");
+                        
+                        // Allow Kernel to read User memory buffer
+                        asm("li t0, (1 << 18); csrs sstatus, t0;");
+                        
+                        do_display((unsigned int *)tf->a0, (unsigned int)tf->a1, (unsigned int)tf->a2);
+                        
+                        // Disable User memory access for security
+                        asm("li t0, (1 << 18); csrc sstatus, t0;");
+                        
                         tf->a0 = 0;
                         break;
                     
                     case SYS_USLEEP: // 8
-                        // Lab 6: Sleep for microseconds
-                         printk("[Syscall] usleep() not implemented yet\n");
+                        // tf->a0 = microseconds
+                        do_usleep((unsigned int)tf->a0);
+                        // uart_puts("[Syscall] usleep() called with "); uart_hex(tf->a0); uart_puts(" usec\n");
+                        tf->a0 = 0; // Return success
+                        break;
+
+                    case SYS_SIGNAL: 
+                        // ACTUALLY SAVE THE HANDLER:
+                        current->signal_handler[tf->a0] = (void (*)(void))tf->a1;
                         tf->a0 = 0;
                         break;
 
-                    case SYS_SIGNAL: // 9
-                        // Lab 6: Register signal handler
-                        printk("[Syscall] signal() not implemented yet\n");
-                        tf->a0 = -1;
+                    case SYS_SIGRETURN: 
+                        // ACTUALLY RESTORE THE STATE:
+                        *tf = current->saved_tf;
+                        current->in_signal_handler = 0;
                         break;
 
-                    case SYS_SIGRETURN: // 10
-                        // Lab 6: Return from signal handler
-                        printk("[Syscall] sigreturn() not implemented yet\n");
-                        tf->a0 = 0;
+                    case SYS_SIG_KILL: // 11
+                         // The 'kill' command: Send a polite signal to the target process
+                        {
+                            // tf->a0 = pid, tf->a1 = signal number
+                            struct task_struct *target = find_task_by_pid((int)tf->a0);
+                            if (target) {
+                                // Just set the flag! The process will handle it later.
+                                target->pending_signals |= (1 << tf->a1);
+                                tf->a0 = 0; // Success
+                            } else {
+                                tf->a0 = -1; // Process not found
+                            }
+                        }
                         break;
-
-                    case SYS_KILL: // 11
-                        // You need to implement do_kill(pid) in sched.c
-                        // tf->a0 = do_kill((int)tf->a0); 
-                        printk("[Syscall] kill(%d) stub - implement do_kill in sched.c!\n", (int)tf->a0);
-                        tf->a0 = -1; 
-                        break;
-
                     case SYS_MMAP: // 12
-                         printk("[Syscall] mmap() not implemented yet\n");
-                         tf->a0 = 0;
-                         break;
 
                     // --- File System Calls (Lab 7/8) ---
                     case SYS_OPEN:  // 13
@@ -209,11 +263,21 @@ void do_trap(struct TrapFrame *tf) {
                         break;
 
                     default:
-                        printk("[Trap] Unknown Syscall ID: %d\n", tf->a7);
+                        uart_puts("Unknown syscall: "); uart_hex(tf->a7); uart_puts("\n");
                         tf->a0 = -1; // Return Error Code
                         break;
                 }
                 break;
-            }
+            default:
+                // Use polling UART functions so it prints even with interrupts off
+                uart_puts("\n[Kernel Panic] Unhandled Synchronous Exception!\n");
+                uart_puts("Exception Code: "); uart_hex(exception_code); uart_puts("\n");
+                uart_puts("sepc: 0x"); uart_hex(tf->sepc); uart_puts("\n");
+                uart_puts("stval: 0x"); uart_hex(tf->stval); uart_puts("\n");
+                disable_interrupt();
+                while(1); // Halt the system
+                break;
+        }
     }
+    check_signals(tf);
 }

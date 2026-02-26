@@ -61,3 +61,4 @@ void uart_isr();
 
 void uart_puts_async(const char *s);
 
+int uart_getc_nonblocking(char *out_char);

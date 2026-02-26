@@ -3,9 +3,9 @@
 #include "mm.h"      
 #include "trap.h"    
 #include "uart.h"    
-#include "string.h"
-#include "sys.h"   
-#include "utils.h" 
+#include "string.h"  // For memset
+#include "sys.h"     // For fork(), getpid(), exit()
+#include "utils.h"   // [NEW] For mini_sprintf
 
 /* ========================================================================= */
 /* USER SPACE CODE (Running in User Mode)                                    */
@@ -13,50 +13,57 @@
 
 // Wrapper to format string and call SYS_UART_WRITE
 void user_printk(const char *fmt, ...) {
-    char buf[256]; // Temporary buffer for formatting
+    char buf[256]; // Temporary buffer
     va_list args;
     
     va_start(args, fmt);
-    mini_sprintf(buf, fmt, args); // [NEW] Uses implementation in utils.c
+    mini_sprintf(buf, fmt, args); 
     va_end(args);
 
-    // Call SYS_UART_WRITE (2) with the formatted buffer
-    // We use inline assembly here to ensure the trap happens correctly
+    // [NEW] Calculate the actual string length!
+    long len = 0;
+    while(buf[len] != '\0') len++;
+
+    // Bind variables directly to RISC-V registers for the ecall
+    register long a7 asm("a7") = 2;         // SYS_UART_WRITE
+    register long a0 asm("a0") = (long)buf; // Buffer address
+    register long a1 asm("a1") = len;       // [NEW] Pass the real length
+
+    // Execute system call safely
     asm volatile(
-        "mv a7, %0\n\t" 
-        "mv a0, %1\n\t"
-        "mv a1, %2\n\t"
-        "ecall\n\t"
-        : 
-        : "r"((long)SYS_UART_WRITE), "r"(buf), "r"(0)
-        : "a0", "a1", "a7"
+        "ecall"
+        : "+r"(a0)           // Output: a0
+        : "r"(a1), "r"(a7)   // Inputs: a1, a7
+        : "memory"           // Tell GCC memory was modified
     );
 }
-
 // Locally map printk to our user-mode wrapper
 #define printk user_printk
 
-void do_fork_test(void) {
+void do_fork_test()
+{
     printk("Fork test (pid = %d)\n", getpid());
     int cnt = 1;
     int ret = 0;
-    
     if ((ret = fork()) == 0) {
         long cur_sp;
         asm("mv %0, sp" : "=r"(cur_sp));
-        
-        printk("child1: pid = %d, cnt = %d, ptr = %p, sp = %p\n", getpid(), cnt, &cnt, cur_sp);
+        printk("child1: pid = %d, cnt = %d, ptr = %p, sp = %p\n", getpid(), cnt,
+               &cnt, cur_sp);
         cnt++;
 
         if ((ret = fork()) != 0) {
             asm("mv %0, sp" : "=r"(cur_sp));
-            printk("child1: pid = %d, cnt = %d, ptr = %p, sp = %p\n", getpid(), cnt, &cnt, cur_sp);
+            printk("child1: pid = %d, cnt = %d, ptr = %p, sp = %p\n", getpid(),
+                   cnt, &cnt, cur_sp);
             cnt++;
         } else {
             while (cnt < 5) {
                 asm("mv %0, sp" : "=r"(cur_sp));
-                printk("child2: pid = %d, cnt = %d, ptr = %p, sp = %p\n", getpid(), cnt, &cnt, cur_sp);
-                for (volatile int i = 0; i < 10000000; i++); 
+                printk("child2: pid = %d, cnt = %d, ptr = %p, sp = %p\n",
+                       getpid(), cnt, &cnt, cur_sp);
+                for (int i = 0; i < 1000000000; i++)
+                    ;
                 cnt++;
             }
         }
@@ -74,7 +81,6 @@ void do_fork_test(void) {
 void test_fork(void) {
     disable_interrupt();
     uart_puts("[Kernel] Setting up Fork Test...\n");
-
     struct task_struct *p = (struct task_struct *)kmalloc(sizeof(struct task_struct));
     if (!p) return;
 
@@ -109,9 +115,7 @@ void test_fork(void) {
 
     // Add to Scheduler
     list_add_tail(&p->list, &runqueue);
-
     uart_puts("[Kernel] Fork Test Process Created. Switching to scheduler...\n");
-    enable_interrupt();
     // Wait until test processes finish
     while (num_runnable_tasks() > 1) {
         kill_zombies();

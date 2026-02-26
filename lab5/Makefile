@@ -27,9 +27,9 @@ else
 endif
 
 # Flags
-CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer -march=rv64gc
-# -march=rv64gc_zicbom
+# CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer -march=rv64gc
 
+CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer  -march=rv64gc_zicbom
 # Source Discovery
 SRCS_C   = $(wildcard $(SRC_DIR)/*.c)
 SRCS_ASM = $(wildcard $(SRC_DIR)/*.S $(SRC_DIR)/*.s)
@@ -59,11 +59,11 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 user_prog:
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building User Program..."
-	# 1. Compile assembly to object
+# 1. Compile assembly to object
 	$(CC) $(CFLAGS) -c $(USER_DIR)/test.S -o $(BUILD_DIR)/test.o
-	# 2. Link to address 0x0 (Flat Binary for loading)
+# 2. Link to address 0x0 (Flat Binary for loading)
 	$(CC) -Ttext 0x0 -nostdlib -o $(BUILD_DIR)/test.elf $(BUILD_DIR)/test.o
-	# 3. Extract binary and copy to rootfs
+# 3. Extract binary and copy to rootfs
 	$(OBJCOPY) -O binary $(BUILD_DIR)/test.elf $(ROOTFS_DIR)/user_prog
 	@echo "User program installed: $(ROOTFS_DIR)/user_prog"
 
@@ -76,11 +76,11 @@ cpio: user_prog
 
 # Standard Hardware Payload
 payload: CFLAGS += -D__OPI__
-payload: clean $(OBJS)
+payload: clean cpio $(OBJS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building Payload (Hardware Version)..."
 	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
-	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS)
+	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS) -lgcc
 	$(OBJCOPY) -O binary $(BUILD_DIR)/payload.elf $(BUILD_DIR)/payload.bin
 	@echo "Generated Hardware Payload: $(BUILD_DIR)/payload.bin at $(PAYLOAD_BASE)"
 
@@ -92,7 +92,7 @@ qemu_payload: clean $(OBJS)
 # Generate linker script using QEMU Base
 	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
 # Link
-	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS)
+	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS) -lgcc
 # Binary
 	$(OBJCOPY) -O binary $(BUILD_DIR)/payload.elf $(BUILD_DIR)/payload.bin
 	@echo "-------------------------------------------------------"
@@ -108,7 +108,7 @@ qemu: clean cpio qemu_payload $(OBJS)
 # Re-link for the kernel elf used by QEMU command (can reuse payload logic or separate)
 # This part creates the 'kernel.elf' QEMU loads initially
 	$(CC) -E -P -x c -DKERNEL_BASE=$(QEMU_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
-	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS)
+	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS) -lgcc
 	
 	@echo "-------------------------------------------------------"
 	@echo "NOTE: QEMU will pause and wait for a connection."
@@ -124,7 +124,7 @@ image: CFLAGS += -D__OPI__
 image: clean cpio payload $(OBJS)
 	@echo "Building for Orange Pi RV 2..."
 	$(CC) -E -P -x c -DKERNEL_BASE=$(OPI_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
-	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS)
+	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS) -lgcc
 	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/kernel.bin
 	
 	cp $(SRC_DIR)/kernel.its $(BUILD_DIR)/

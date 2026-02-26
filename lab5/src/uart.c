@@ -1,6 +1,7 @@
 #include "uart.h"
 #include "printk.h"
 #include "trap.h"
+#include "sched.h"
 unsigned long uart_base_addr = DEFAULT_UART_BASE;
 
 // ====================================================================
@@ -44,10 +45,19 @@ void uart_init() {
     uart_disable_interrupt();
 }
 
+// char uart_getc() {
+//     while ((*UART_LSR & 0x01) == 0);
+//     char c = (char)*UART_RBR;
+//     return c == '\r' ? '\n' : c;
+// }
+
 char uart_getc() {
-    while ((*UART_LSR & 0x01) == 0);
-    char c = (char)*UART_RBR;
-    return c == '\r' ? '\n' : c;
+    char c;
+    // Keep yielding the CPU until the smart reader finds a character
+    while (!uart_getc_nonblocking(&c)) {
+        schedule();
+    }
+    return c;
 }
 
 void uart_putc(char c) {
@@ -229,4 +239,24 @@ void uart_putc_buffered(char c) {
     if (flags & SSTATUS_SIE) {
         enable_interrupt();
     }
+}
+
+// Returns 1 if data was read, 0 if completely empty
+int uart_getc_nonblocking(char *out_char) {
+    // 1. Check the software buffer (The ISR grabbed the key)
+    if (!RX_EMPTY()) {
+        char c = rx_buffer[rx_tail];
+        rx_tail = BUF_NEXT(rx_tail);
+        *out_char = (c == '\r') ? '\n' : c;
+        return 1; // Success
+    }
+    
+    // 2. Check the hardware directly (Interrupts are currently disabled)
+    if (*UART_LSR & 0x01) {
+        char c = (char)*UART_RBR;
+        *out_char = (c == '\r') ? '\n' : c;
+        return 1; // Success
+    }
+    
+    return 0; // Nothing available anywhere
 }

@@ -10,6 +10,7 @@
 #include "plic.h"
 #include "task.h"
 #include "sched.h"
+#include "fb.h"
 /* Global variables to store boot information */
 unsigned long boot_cpu_hartid;
 unsigned long DTB_BASE;
@@ -40,6 +41,7 @@ int start_kernel(unsigned long hartid, unsigned long dtb)
     mm_init((void *)dtb);
     task_init();
     sched_init();
+    fb_init();
     plic_init();
     enable_external_interrupt();
     uart_enable_interrupt();

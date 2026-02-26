@@ -20,10 +20,12 @@ extern unsigned long DTB_BASE;
 /* ========================================================================= */
 /* DEMO FUNCTIONS                                                            */
 /* ========================================================================= */
-void foo() {
+void foo(void *arg) {
+    (void)arg; // Now the compiler knows what 'arg' is, and we mark it unused.
+    
     for (int i = 0; i < 5; i++) {
         printk("Thread id: %d %d\n", get_current()->pid, i);
-        for (int i = 0; i < 100000000; i++);
+        for (int j = 0; j < 100000000; j++); // Changed inner 'i' to 'j' to avoid shadowing warnings
         schedule();
     }
     kthread_exit();
@@ -31,8 +33,8 @@ void foo() {
 
 void demo_sched() {
     uart_puts("\n=== SCHEDULER TEST ===\n");
-    uart_puts("Creating 3 threads (PID 1, 2, 3)...\n");
-    for(int i = 0; i < 3; ++i) {
+    uart_puts("Creating 5 threads (PID 1, 2, 3)...\n");
+    for(int i = 0; i < 5; ++i) {
         thread_create(foo, NULL);
     }
     idle();
@@ -88,6 +90,7 @@ void demo_help() {
     uart_puts("  timer   - Test Timer Interrupts (Timeout & Sleep)\n");
     uart_puts("  task    - Test Task Queue Priority & Preemption\n");
     uart_puts("  sched   - Test Kernel Threads\n");
+    uart_puts("  fork    - Test Process Forking\n");
 }
 
 /* Callback for Strong Test */
@@ -234,7 +237,7 @@ void cmd_help()
     uart_puts("  ls          - List initial ramdisk (initrd) files\n");
     uart_puts("  cat <file>  - Output initrd file content\n");
     uart_puts("  load        - Load kernel over UART\n");
-    uart_puts("  exec        - Execute user_prog\n");
+    uart_puts("  exec [file] - Execute user program (default: osctest.bin, opts: osctest.bin, user_prog)\n");
     uart_puts("  demo [opt]  - Run demos (buddy, slab, timer, task, sched)\n");
 }
 
@@ -346,8 +349,23 @@ void exec_command(char *buf)
             demo_help();
         }
     }
-    else if (!strcmp(buf, "exec")) {
-        initrd_exec("user_prog");
+    else if (strncmp(buf, "exec", 4) == 0) {
+        char *arg = buf + 4;
+        
+        // Skip spaces between "exec" and the filename
+        while (*arg == ' ') arg++;
+
+        // If no argument is provided, default to user_prog
+        if (*arg == '\0') {
+            disable_interrupt();
+            uart_puts("No file specified. Defaulting to 'osctest.bin'...\n");
+            enable_interrupt();
+            initrd_exec("osctest.bin");
+        } 
+        else {
+            // Execute the specific file requested (e.g., "osctest.bin")
+            initrd_exec(arg);
+        }
     }
     else {
         uart_puts("Unknown command: "); uart_puts(buf); uart_puts("\n");
