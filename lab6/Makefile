@@ -14,9 +14,11 @@ ROOTFS_DIR = rootfs
 USER_DIR   = user_program
 
 # Base Addresses
-QEMU_BASE = 0x80200000
-OPI_BASE  = 0x00200000
-
+# QEMU_BASE = 0x80200000
+# OPI_BASE  = 0x00200000
+# Vm addresses
+QEMU_BASE = 0xffffffc080200000
+OPI_BASE = 0xffffffc000200000
 # --- Automatic Payload Base Selection ---
 # If "qemu" or "qemu_payload" is in the make targets, use High RAM.
 # Otherwise (e.g. "make image"), use the Hardware safe offset.
@@ -27,8 +29,6 @@ else
 endif
 
 # Flags
-# CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer -march=rv64gc
-
 CFLAGS    = -Wall -Wextra -O0 -g -mcmodel=medany -ffreestanding -nostdlib -I$(INC_DIR) -fomit-frame-pointer  -march=rv64gc_zicbom
 # Source Discovery
 SRCS_C   = $(wildcard $(SRC_DIR)/*.c)
@@ -115,9 +115,15 @@ qemu: clean cpio qemu_payload $(OBJS)
 	@echo "Look for 'char device redirected to /dev/pts/X' below."
 	@echo "-------------------------------------------------------"
 	qemu-system-riscv64 -machine virt -display sdl -serial stdio -serial pty \
-		-kernel $(BUILD_DIR)/kernel.elf \
+		-kernel $(BUILD_DIR)/payload.elf \
 		-initrd $(BUILD_DIR)/initramfs.cpio \
-		-device ramfb
+		-device ramfb \
+		-d int,cpu_reset -D qemu.log
+
+# 	qemu-system-riscv64 -machine virt -bios default -nographic -serial mon:stdio  \
+# 		-kernel $(BUILD_DIR)/kernel.elf \
+# 		-initrd $(BUILD_DIR)/initramfs.cpio
+
 
 # 2. Hardware Image
 image: CFLAGS += -D__OPI__
@@ -143,4 +149,4 @@ screen:
 	sudo screen /dev/ttyUSB0 115200
 
 clean:
-	rm -rf $(BUILD_DIR) *.dtb
+	rm -rf $(BUILD_DIR) *.dtb *.log

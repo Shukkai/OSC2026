@@ -7,6 +7,8 @@
 #include "bootload.h"
 #include "utils.h"
 #include "mm.h"
+#include "vm.h"
+#include "sys.h"
 #include "timer.h"
 #include "printk.h"
 #include "task.h"
@@ -150,31 +152,55 @@ void demo_timer() {
     uart_puts("---------------------------------------------------\n");
 }
 void demo_buddy() {
-    uart_puts("\n=== Buddy System Test ===\n");
-    buddy_verbose = 1; // Ensure verbose is ON
+    buddy_verbose = 1;
+    uart_puts("Testing memory allocation...\n");
+    char *ptr1 = (char *)kmalloc(4000);
+    char *ptr2 = (char *)kmalloc(8000);
+    char *ptr3 = (char *)kmalloc(4000);
+    char *ptr4 = (char *)kmalloc(4000);
 
-    // --- CHANGE 1: Request Order 9 (512 Pages) ---
-    // This forces the system to split a Max-Order (10) block.
-    // If we asked for Order 0 or 2, we might just find a loose fragment.
-    uart_puts("Allocating 512 Pages (Order 9)...\n");
-    struct page *p_large = alloc_pages(9); 
-    
-    if (p_large) {
-        uart_puts("-> Allocated Order 9 at PFN: "); 
-        uart_hex(page_to_pfn(p_large)); 
-        uart_puts("\n");
-        
-        // --- CHANGE 2: Free it immediately ---
-        // Since we just split an Order 10 block, the other half (buddy)
-        // is definitely free. This GUARANTEES a merge log.
-        uart_puts("Freeing Order 9... (Expect MERGE logs)\n");
-        free_pages(p_large, 9);
-    } else {
-        uart_puts("-> [Fail] Out of memory for Order 9.\n");
+    kfree(ptr1);
+    kfree(ptr2);
+    kfree(ptr3);
+    kfree(ptr4);
+
+    /* Test kmalloc */
+    uart_puts("Testing dynamic allocator...\n");
+    char *kmem_ptr1 = (char *)kmalloc(16);
+    char *kmem_ptr2 = (char *)kmalloc(32);
+    char *kmem_ptr3 = (char *)kmalloc(64);
+    char *kmem_ptr4 = (char *)kmalloc(128);
+
+    kfree(kmem_ptr1);
+    kfree(kmem_ptr2);
+    kfree(kmem_ptr3);
+    kfree(kmem_ptr4);
+
+    char *kmem_ptr5 = (char *)kmalloc(16);
+    char *kmem_ptr6 = (char *)kmalloc(32);
+
+    kfree(kmem_ptr5);
+    kfree(kmem_ptr6);
+
+    // Test allocate new page if the cache is not enough
+    void *kmem_ptr[102];
+    for (int i=0; i<100; i++) {
+        kmem_ptr[i] = (char *)kmalloc(128);
+    }
+    for (int i=0; i<100; i++) {
+        kfree(kmem_ptr[i]);
     }
 
-    buddy_verbose = 0; // Turn off verbose
-    uart_puts("=== Buddy Test Complete ===\n");
+    // Test exceeding the maximum size
+    char *kmem_ptr7 = (char *)kmalloc(MAX_ALLOC_SIZE + 1);
+    if (kmem_ptr7 == NULL) {
+        uart_puts("Allocation failed as expected for size > MAX_ALLOC_SIZE\n");
+    }
+    else {
+        uart_puts("Unexpected allocation success for size > MAX_ALLOC_SIZE\n");
+        kfree(kmem_ptr7);
+    }
+    buddy_verbose = 0; 
 }
 
 void demo_slab() {
@@ -293,7 +319,7 @@ void exec_command(char *buf)
         uart_puts("SBI Impl Version: "); uart_hex(ret.value); uart_puts("\n");
 
         // 3. Get UART info
-        uint64_t uart_addr = fdt_get_uart_base((void *)DTB_BASE);
+        uint64_t uart_addr = fdt_get_uart_base((const void *)phys_to_virt(DTB_BASE));
         if (uart_addr) {
             uart_puts("UART Base:        "); uart_hex(uart_addr); uart_puts("\n");
         } else {
@@ -342,7 +368,8 @@ void exec_command(char *buf)
             demo_sched();
         }
         else if (!strcmp(arg, "fork")) {
-            test_fork();
+            // test_fork();
+            uart_puts("Disabled, test with osctest.bin instead.\n");
         }
         else {
             uart_puts("Unknown demo option: "); uart_puts(arg); uart_puts("\n");
@@ -351,19 +378,17 @@ void exec_command(char *buf)
     }
     else if (strncmp(buf, "exec", 4) == 0) {
         char *arg = buf + 4;
-        
-        // Skip spaces between "exec" and the filename
         while (*arg == ' ') arg++;
+        if (*arg == '\0') arg = "osctest.bin";
 
-        // If no argument is provided, default to user_prog
-        if (*arg == '\0') {
-            uart_puts("No file specified. Defaulting to 'osctest.bin'...\n");
-            initrd_exec("osctest.bin");
-        } 
-        else {
-            // Execute the specific file requested (e.g., "osctest.bin")
-            initrd_exec(arg);
-        }
+        uart_puts("No file specified. Defaulting to '");
+        uart_puts(arg);
+        uart_puts("'...\nLoading '");
+        uart_puts(arg);
+        uart_puts("'...\n");
+
+        initrd_exec(arg);  // creates user task, waits for it to finish
+        
     }
     else {
         uart_puts("Unknown command: "); uart_puts(buf); uart_puts("\n");

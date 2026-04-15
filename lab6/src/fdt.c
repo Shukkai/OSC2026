@@ -5,6 +5,20 @@
 /* Access the DTB_BASE set in kernel.c */
 extern unsigned long DTB_BASE;
 
+/* * fdt_totalsize:
+ * Returns the total size of the DTB blob from the header.
+ * Required for parsing the structure and reserving the DTB memory region.
+ */
+uint32_t fdt_totalsize(const void *fdt) {
+    const struct fdt_header *header = (const struct fdt_header *)fdt;
+    
+    // Safety check: Validate Magic Number
+    if (bswap32(header->magic) != FDT_MAGIC) {
+        return 0;
+    }
+    
+    return bswap32(header->totalsize);
+}
 
 /* * fdt_path_offset:
  * Traverses the device tree to find a node matching the path.
@@ -177,62 +191,6 @@ int fdt_next_node(const void *fdt, int offset, int *depth) {
  * Scans the tree to find the UART compatible node and returns its address.
  * Matches: "ns16550a" (QEMU) and "snps,dw-apb-uart" (Orange Pi).
  */
-// uint64_t fdt_get_uart_base(const void *fdt) {
-//     if (!fdt) return 0;
-    
-//     const struct fdt_header *header = (const struct fdt_header *)fdt;
-//     if (bswap32(header->magic) != FDT_MAGIC) return 0;
-
-//     const uint8_t *struct_base = (const uint8_t *)fdt + bswap32(header->off_dt_struct);
-//     const uint8_t *p = struct_base;
-
-//     while (1) {
-//         uint32_t token = bswap32(*(uint32_t *)p);
-        
-//         if (token == FDT_END) break;
-
-//         if (token == FDT_BEGIN_NODE) {
-//             int offset = (int)(p - struct_base);
-            
-//             p += 4;
-//             p = (const uint8_t *)align_up((uintptr_t)(p + strlen((char *)p) + 1), 4);
-
-//             int len;
-//             /* Use our new API to check compatibility */
-//             const char *compat = (const char *)fdt_getprop(fdt, offset, "compatible", &len);
-            
-//             if (compat) {
-//                 /* Check for QEMU or Orange Pi UART */
-//                 if (strstr(compat, "ns16550a") || 
-//                     strstr(compat, "snps,dw-apb-uart") ||
-//                     strstr(compat, "ky,pxa-uart")) {
-                    
-//                     const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, offset, "reg", &len);
-//                     if (reg) {
-//                         /* Read 64-bit address (Big Endian -> Little Endian) */
-//                         /* Note: 'reg' is usually address (uint64) + size (uint64) */
-//                         uint64_t val_hi = bswap32(reg[0]);
-//                         uint64_t val_lo = bswap32(reg[1]);
-//                         return (val_hi << 32) | val_lo;
-//                     }
-//                 }
-//             }
-//         }
-//         else if (token == FDT_PROP) {
-//             p += 4;
-//             uint32_t len = bswap32(*(uint32_t *)p);
-//             p += 8;
-//             p = (const uint8_t *)align_up((uintptr_t)(p + len), 4);
-//         }
-//         else if (token == FDT_END_NODE || token == FDT_NOP) {
-//             p += 4;
-//         }
-//     }
-//     return 0;
-// }
-
-/* Assuming FDT_MAGIC, FDT_BEGIN_NODE, etc., and align_up are defined elsewhere */
-
 uint64_t fdt_get_uart_base(const void *fdt) {
     if (!fdt) return 0;
     
@@ -250,32 +208,30 @@ uint64_t fdt_get_uart_base(const void *fdt) {
         if (token == FDT_BEGIN_NODE) {
             int offset = (int)(p - struct_base);
             
-            p += 4; // Advance past the FDT_BEGIN_NODE token
-            
-            /* 1. Extract the node name right here */
-            const char *node_name = (const char *)p;
-            
-            /* Advance pointer past the string and null terminator, then align to 4 bytes */
-            p = (const uint8_t *)align_up((uintptr_t)(p + strlen(node_name) + 1), 4);
+            p += 4;
+            p = (const uint8_t *)align_up((uintptr_t)(p + strlen((char *)p) + 1), 4);
 
-            /* 2. Check if the node is our target (starts with "serial", e.g. "serial@d4017000") */
-            if (strncmp(node_name, "serial", 6) == 0) {
-                int len;
-                
-                /* Optional but safe: Still verify it's a UART we support */
-                const char *compat = (const char *)fdt_getprop(fdt, offset, "compatible", &len);
-                
-                if (compat && (strstr(compat, "ns16550a") || 
-                               strstr(compat, "snps,dw-apb-uart") ||
-                               strstr(compat, "ky,pxa-uart"))) {
+            int len;
+            /* Use our new API to check compatibility */
+            const char *compat = (const char *)fdt_getprop(fdt, offset, "compatible", &len);
+            
+            if (compat) {
+                /* Check for QEMU or Orange Pi UART */
+                if (strstr(compat, "ns16550a") || 
+                    strstr(compat, "snps,dw-apb-uart") ||
+                    strstr(compat, "ky,pxa-uart")) {
                     
-                    /* 3. Grab the reg property */
+                    const char *status = (const char *)fdt_getprop(fdt, offset, "status", &len);
+                    if (status && strcmp(status, "disabled") == 0) {
+                        // Skip this node, continue the while loop
+                        continue; 
+                    }
                     const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, offset, "reg", &len);
-                    if (reg && len >= 8) { // Make sure we actually have at least 8 bytes (64 bits) to read
+                    if (reg) {
                         /* Read 64-bit address (Big Endian -> Little Endian) */
+                        /* Note: 'reg' is usually address (uint64) + size (uint64) */
                         uint64_t val_hi = bswap32(reg[0]);
                         uint64_t val_lo = bswap32(reg[1]);
-                        
                         return (val_hi << 32) | val_lo;
                     }
                 }
@@ -284,7 +240,7 @@ uint64_t fdt_get_uart_base(const void *fdt) {
         else if (token == FDT_PROP) {
             p += 4;
             uint32_t len = bswap32(*(uint32_t *)p);
-            p += 8; // Advance past len (4 bytes) and nameoff (4 bytes)
+            p += 8;
             p = (const uint8_t *)align_up((uintptr_t)(p + len), 4);
         }
         else if (token == FDT_END_NODE || token == FDT_NOP) {
@@ -292,4 +248,19 @@ uint64_t fdt_get_uart_base(const void *fdt) {
         }
     }
     return 0;
+}
+
+uint32_t fdt_get_timebase(const void *fdt) {
+    int cpus_offset = fdt_path_offset(fdt, "/cpus");
+    if (cpus_offset < 0) return 0;
+
+    int len;
+    const void *prop = fdt_getprop(fdt, cpus_offset, "timebase-frequency", &len);
+    
+    if (prop && len == 4) {
+        const uint32_t *val = (const uint32_t *)prop;
+        return bswap32(*val);
+    }
+    
+    return 0; // Not found
 }

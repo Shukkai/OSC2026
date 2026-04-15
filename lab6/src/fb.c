@@ -1,7 +1,7 @@
 #include "fb.h"
 #include "uart.h"
 #include "string.h"
-
+#include "vm.h"
 // =========================================================================
 // GLOBAL MEMORY ALLOCATION
 // =========================================================================
@@ -48,7 +48,7 @@ void fb_init() {
 
     // Notice we can still use the structs because they are defined in fb.h!
     struct QemuRamFBCfg cfg __attribute__((aligned(64)));
-    cfg.addr   = __builtin_bswap64(FB_ADDR);
+    cfg.addr   = __builtin_bswap64(virt_to_phys(FB_ADDR));
     cfg.fourcc = __builtin_bswap32(0x34325258); 
     cfg.flags  = __builtin_bswap32(0);
     cfg.width  = __builtin_bswap32(SCREEN_WIDTH);
@@ -58,17 +58,19 @@ void fb_init() {
     struct FWCfgDmaAccess dma __attribute__((aligned(64)));
     dma.control = __builtin_bswap32((ramfb_select << 16) | 0x0018); 
     dma.length  = __builtin_bswap32(sizeof(struct QemuRamFBCfg));
-    dma.address = __builtin_bswap64((uint64_t)&cfg); 
+    dma.address = __builtin_bswap64(virt_to_phys((unsigned long)&cfg));
+
 
     asm volatile("cbo.clean 0(%0)" :: "r"(&cfg) : "memory");
     asm volatile("cbo.clean 0(%0)" :: "r"(&dma) : "memory");
     __sync_synchronize();
-    *FW_CFG_DMA_ADDR = __builtin_bswap64((uint64_t)&dma);
+    *FW_CFG_DMA_ADDR = __builtin_bswap64(virt_to_phys((unsigned long)&dma));
     __sync_synchronize();
     uart_puts("QEMU ramfb ready!\n");
 #else
     uart_puts("Orange Pi RV2 Hardware FB Ready at 0x7f700000.\n");
 #endif
+    
 }
 
 void fb_draw(unsigned int *bmp_image, unsigned int width, unsigned int height) {

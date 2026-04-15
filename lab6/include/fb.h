@@ -6,7 +6,8 @@
 // =========================================================================
 // FW_CFG DEFINITIONS (QEMU Virtual Hardware)
 // =========================================================================
-#define FW_CFG_BASE         0x10100000
+// #define FW_CFG_BASE         0x10100000
+#define FW_CFG_BASE  (0x10100000UL + 0xffffffc000000000UL)
 #define FW_CFG_DATA         (volatile uint8_t  *)(FW_CFG_BASE + 0x00)
 #define FW_CFG_SELECTOR     (volatile uint16_t *)(FW_CFG_BASE + 0x08)
 #define FW_CFG_DMA_ADDR     (volatile uint64_t *)(FW_CFG_BASE + 0x10)
@@ -40,14 +41,13 @@ struct FWCfgDmaAccess {
 #ifdef __QEMU__
     #define SCREEN_WIDTH 800
     #define SCREEN_HEIGHT 600
-    
-    // DECLARE the array here (so other files know it exists)
     extern unsigned int qemu_framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT];
-    #define FB_ADDR ((unsigned long)qemu_framebuffer)
+    #define FB_ADDR      ((unsigned long)qemu_framebuffer)
+    #define FW_CFG_BASE  (0x10100000UL + 0xffffffc000000000UL)
 #else
     #define SCREEN_WIDTH 1920
     #define SCREEN_HEIGHT 1080
-    #define FB_ADDR 0x7f700000
+    #define FB_ADDR      (0x7f700000UL + 0xffffffc000000000UL)
 #endif
 
 // =========================================================================

@@ -109,14 +109,11 @@ void do_trap(struct TrapFrame *tf) {
 
                 // 2. Handle Syscall Number (passed in a7)
                 if (tf->a7 == SYS_WRITE) {
-                    // Example: sys_write (Not used by your current test.S but good to have)
-                    // char *str = (char *)tf->a0;
-                    // uart_puts(str);
                 }
                 else if (tf->a7 == SYS_EXIT) {
-                    printk("[Syscall] Program exited with code %d.\n", tf->a0);
-                    printk("System Halt. Reboot to restart.\n");
-                    while(1); // <--- Just hang here!
+                    // printk("[Syscall] Program exited with code %d.\n", tf->a0);
+                    // printk("System Halt. Reboot to restart.\n");
+                    // while(1); // <--- Just hang here!
                 }
                 else {
                     printk("[System Call] Unknown Syscall ID: %d\n", tf->a7);
