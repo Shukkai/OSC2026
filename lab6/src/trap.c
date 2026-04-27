@@ -7,6 +7,7 @@
 #include "task.h"
 #include "sys.h"
 #include "sched.h"
+#include "signal.h"
 /* ========================================================================= */
 /* VERIFICATION (Moved from kernel.c)                                        */
 /* ========================================================================= */
@@ -64,51 +65,6 @@ void enable_external_interrupt()
     asm volatile("li t0, (1 << 9); csrs sie, t0" : : : "t0");
 }
 
-void check_signals(struct TrapFrame *tf) {
-    // Don't process signals if there is no current task, 
-    // or if we are already inside a signal handler!
-    if (!current || current->in_signal_handler) return;
-
-    if (current->pending_signals) {
-        for (int i = 0; i < MAX_SIG; i++) {
-            if (current->pending_signals & (1 << i)) {
-                // We found a pending signal! Clear the flag immediately.
-                current->pending_signals &= ~(1 << i); 
-
-                if (current->signal_handler[i]) {
-                    // --- A CUSTOM HANDLER EXISTS ---
-                    
-                    // 1. Save original context
-                    current->saved_tf = *tf;
-                    current->in_signal_handler = 1;
-
-                    // 2. Inject the Trampoline onto the User Stack
-                    tf->sp = (tf->sp - 8) & ~15UL; 
-                    uint32_t *trampoline = (uint32_t *)tf->sp;
-                    
-                    asm volatile("li t0, (1 << 18); csrs sstatus, t0;");
-                    trampoline[0] = 0x00a00893; // li a7, 10 (SYS_SIGRETURN)
-                    trampoline[1] = 0x00000073; // ecall
-                    asm volatile("li t0, (1 << 18); csrc sstatus, t0;");
-
-                    asm volatile("fence.i");
-
-                    // 3. Force CPU to jump to handler
-                    tf->sepc = (uint64_t)current->signal_handler[i];
-                    tf->ra = tf->sp;
-                    
-                } else {
-                    // --- NO HANDLER EXISTS ---
-                    // Make it conditional: Only kill the process if the signal is SIGTERM (15)!
-                    if (i == 15) {
-                        do_exit(0);
-                    }
-                }
-                break; // Process one signal per trap
-            }
-        }
-    }
-}
 
 /* ========================================================================= */
 /* TRAP DISPATCHER (Called from entry.S)                                     */
@@ -147,126 +103,110 @@ void do_trap(struct TrapFrame *tf) {
         // Handle Synchronous Exceptions
         switch (exception_code) {
             case EXC_U_ECALL:
-                /* * SYSCALL HANDLER 
-                 * 1. Advance sepc by 4 bytes (instruction size) 
-                 * Otherwise, 'sret' returns to the 'ecall' instruction,
-                 * causing an infinite loop!
-                 */
+                // 1. Advance the Program Counter to the next instruction
+                // Otherwise, 'sret' returns to 'ecall', causing an infinite loop.
                 tf->sepc += 4;
 
-                // 2. Dispatch Syscall based on a7
-                // Macros defined in sys.h
+                // 2. Dispatch Syscall based on the a7 register
                 switch (tf->a7) {
-                    case SYS_GETPID: // 0
+                    
+                    // --- CATEGORY 1: PROCESS MANAGEMENT ---
+                    case SYS_GETPID:
                         tf->a0 = current->pid;
                         break;
 
-                    case SYS_UART_READ: // 1
-                        tf->a0 = do_uart_read((char *)tf->a0, tf->a1);
-                        break;
-
-                    case SYS_UART_WRITE: // 2
-                        tf->a0 = do_uart_write((const char *)tf->a0, tf->a1);
-                        break;
-
-                    case SYS_EXEC: // 3
-                        // tf->a0 contains the string pointer passed from user space
-                        tf->a0 = do_exec((const char *)tf->a0, tf);
-                        break;
-
-                    case SYS_FORK: // 4
-                        // uart_puts("do fork() called from syscall handler\n");
+                    case SYS_FORK:
                         tf->a0 = do_fork();
                         break;
 
-                    case SYS_EXIT: // 5
-                        // uart_puts("\n>>> SUCCESS: User Program called SYS_EXIT! <<<\n");
-                        do_exit(tf->a0);
+                    case SYS_WAITPID:
+                        tf->a0 = do_waitpid(tf->a0);
                         break;
 
+                    case SYS_EXEC:
+                        tf->a0 = do_exec((const char *)tf->a0, tf);
+                        break;
 
-                    case SYS_KILL: // 6
-                        // The 'stop' command: Forcefully terminate the process immediately!
+                    case SYS_EXIT:
+                        do_exit((int)tf->a0);
+                        break;
+
+                    case SYS_KILL: 
+                        // Immediate, forced termination (The 'stop' command)
                         {
                             struct task_struct *target = find_task_by_pid((int)tf->a0);
                             if (target) {
-                                // Bypass signals entirely and turn it into a Zombie!
                                 target->state = TASK_ZOMBIE; 
-                                tf->a0 = 0; // Success
+                                tf->a0 = 0; 
                             } else {
-                                tf->a0 = -1; // Process not found
+                                tf->a0 = -1; 
                             }
                         }
                         break;
 
-                    case SYS_DISPLAY: // 7
-                        // uart_puts("[Syscall] display() called\n");
-                        
-                        // Allow Kernel to read User memory buffer
-                        asm("li t0, (1 << 18); csrs sstatus, t0;");
-                        
-                        do_display((unsigned int *)tf->a0, (unsigned int)tf->a1, (unsigned int)tf->a2);
-                        
-                        // Disable User memory access for security
-                        asm("li t0, (1 << 18); csrc sstatus, t0;");
-                        
-                        tf->a0 = 0;
-                        break;
-                    
-                    case SYS_USLEEP: // 8
-                        // tf->a0 = microseconds
-                        do_usleep((unsigned int)tf->a0);
-                        // uart_puts("[Syscall] usleep() called with "); uart_hex(tf->a0); uart_puts(" usec\n");
-                        tf->a0 = 0; // Return success
+                    // --- CATEGORY 2: I/O & DISPLAY ---
+                    case SYS_UART_READ:
+                        tf->a0 = do_uart_read((char *)tf->a0, tf->a1);
                         break;
 
-                    case SYS_SIGNAL: 
-                        // ACTUALLY SAVE THE HANDLER:
-                        current->signal_handler[tf->a0] = (void (*)(void))tf->a1;
+                    case SYS_UART_WRITE:
+                        tf->a0 = do_uart_write((const char *)tf->a0, tf->a1);
+                        break;
+
+                    case SYS_DISPLAY:
+                        // Temporarily allow Kernel to access User-space memory (SUM bit)
+                        asm("li t0, (1 << 18); csrs sstatus, t0;");
+                        do_display((unsigned int *)tf->a0, (unsigned int)tf->a1, (unsigned int)tf->a2);
+                        asm("li t0, (1 << 18); csrc sstatus, t0;");
                         tf->a0 = 0;
+                        break;
+
+                    case SYS_USLEEP:
+                        do_usleep((unsigned int)tf->a0);
+                        tf->a0 = 0;
+                        break;
+
+                    // --- CATEGORY 3: SIGNALS ---
+                    case SYS_SIGNAL: 
+                        tf->a0 = do_signal((int)tf->a0, (void (*)(void))tf->a1);
+                        break;
+
+                    case SYS_SIG_KILL:
+                        // Polite signal delivery (The 'kill' command)
+                        tf->a0 = do_kill((int)tf->a0, (int)tf->a1);
                         break;
 
                     case SYS_SIGRETURN: 
-                        // ACTUALLY RESTORE THE STATE:
-                        *tf = current->saved_tf;
-                        current->in_signal_handler = 0;
+                        // Restore previous context; tf->a0 is set inside do_sigreturn
+                        tf->a0 = do_sigreturn(tf);
                         break;
 
-                    case SYS_SIG_KILL: // 11
-                         // The 'kill' command: Send a polite signal to the target process
-                        {
-                            // tf->a0 = pid, tf->a1 = signal number
-                            struct task_struct *target = find_task_by_pid((int)tf->a0);
-                            if (target) {
-                                // Just set the flag! The process will handle it later.
-                                target->pending_signals |= (1 << tf->a1);
-                                tf->a0 = 0; // Success
-                            } else {
-                                tf->a0 = -1; // Process not found
-                            }
-                        }
+                    // --- CATEGORY 4: MEMORY MANAGEMENT ---
+                    case SYS_MMAP:
+                        tf->a0 = do_mmap(tf->a0, tf->a1, tf->a2, tf->a3);
                         break;
-                    case SYS_MMAP: // 12
 
-                    // --- File System Calls (Lab 7/8) ---
-                    case SYS_OPEN:  // 13
-                    case SYS_CLOSE: // 14
-                    case SYS_READ:  // 15
-                    case SYS_WRITE: // 16 (File write, distinct from UART)
-                    case SYS_MKDIR: // 17
-                    case SYS_MOUNT: // 18
-                    case SYS_CHDIR: // 19
-                    case SYS_LSEEK: // 20
-                    case SYS_IOCTL: // 21
-                        printk("[Syscall] FileSystem call #%d not implemented yet\n", tf->a7);
+                    // --- CATEGORY 5: FILESYSTEM (FUTURE) ---
+                    case SYS_OPEN:  case SYS_CLOSE: case SYS_READ: 
+                    case SYS_WRITE: case SYS_MKDIR: case SYS_MOUNT: 
+                    case SYS_CHDIR: case SYS_LSEEK: case SYS_IOCTL:
+                        printk("[Syscall] FS call #%d not implemented yet\n", tf->a7);
                         tf->a0 = -1;
                         break;
 
                     default:
                         uart_puts("Unknown syscall: "); uart_hex(tf->a7); uart_puts("\n");
-                        tf->a0 = -1; // Return Error Code
+                        tf->a0 = -1;
                         break;
                 }
+                break;
+            // ----------------------------------------------------
+            // 2. HARDWARE PAGE FAULTS (The CPU tripped an alarm)
+            // ----------------------------------------------------
+            case 12: // Instruction Page Fault
+            case 13: // Load Page Fault
+            case 15: // Store Page Fault
+                handle_page_fault(tf, exception_code);
                 break;
             default:
                 // Use polling UART functions so it prints even with interrupts off
@@ -279,5 +219,5 @@ void do_trap(struct TrapFrame *tf) {
                 break;
         }
     }
-    check_signals(tf);
+    handle_signal(tf);
 }

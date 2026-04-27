@@ -79,7 +79,8 @@ payload: CFLAGS += -D__OPI__
 payload: clean cpio $(OBJS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building Payload (Hardware Version)..."
-	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
+# 	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
+	$(CC) -E -P -x c -DKERNEL_BASE=$(PAYLOAD_BASE) -DPHYS_BASE=$(PAYLOAD_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/payload.ld
 	$(CC) $(CFLAGS) -T $(BUILD_DIR)/payload.ld -o $(BUILD_DIR)/payload.elf $(OBJS) -lgcc
 	$(OBJCOPY) -O binary $(BUILD_DIR)/payload.elf $(BUILD_DIR)/payload.bin
 	@echo "Generated Hardware Payload: $(BUILD_DIR)/payload.bin at $(PAYLOAD_BASE)"
@@ -107,7 +108,8 @@ qemu: clean cpio qemu_payload $(OBJS)
 	@echo "Building Kernel ELF for QEMU (Direct Run)..."
 # Re-link for the kernel elf used by QEMU command (can reuse payload logic or separate)
 # This part creates the 'kernel.elf' QEMU loads initially
-	$(CC) -E -P -x c -DKERNEL_BASE=$(QEMU_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
+# 	$(CC) -E -P -x c -DKERNEL_BASE=$(QEMU_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
+	$(CC) -E -P -x c -DKERNEL_BASE=$(QEMU_BASE) -DPHYS_BASE=$(QEMU_BASE) $(SRC_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.ld
 	$(CC) $(CFLAGS) -T $(BUILD_DIR)/kernel.ld -o $(BUILD_DIR)/kernel.elf $(OBJS) -lgcc
 	
 	@echo "-------------------------------------------------------"

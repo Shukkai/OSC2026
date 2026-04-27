@@ -1,10 +1,12 @@
 #pragma once
 
 #include "list.h"
-#include "trap.h"
-
+struct TrapFrame;   // Defined in trap.h
+struct task_struct; // Defined in sched.h
 #define PAGE_OFFSET   0xffffffc000000000UL
 #define HPAGE_NR      (HPAGE_SIZE / PAGE_SIZE)
+
+#define MMAP_BASE     0x10000000UL
 
 /* Page protection bits */
 #define PAGE_PRESENT  (1UL << 0)
@@ -40,18 +42,23 @@
 
 struct mm_struct {
     unsigned long *pgd;
+    struct list_head mmap_list;
 };
 
-// struct vm_area_struct {
-//     unsigned long vm_start;
-//     unsigned long vm_end;
-//     struct mm_struct *vm_mm;
-//     unsigned long vm_flags;
-//     unsigned long vm_file;
-//     struct list_head list;
-// };
+struct vm_area_struct {
+    unsigned long vm_start;
+    unsigned long vm_end;
+    struct mm_struct *vm_mm;
+    unsigned long vm_flags;
+    unsigned long vm_file;
+    struct list_head list;
+};
 
 void setup_vm(void);
 unsigned long *pagewalk(unsigned long *pgd, unsigned long va, int alloc);
 void map_pages(unsigned long *pgd, unsigned long va, unsigned long pa,
                unsigned long size, unsigned long flags);
+void handle_page_fault(struct TrapFrame *tf, unsigned long exception_code);
+
+unsigned long walk_page_table_to_get_phys(unsigned long *pgd, unsigned long va);
+void clone_vmas_and_page_tables(struct task_struct *parent, struct task_struct *child);

@@ -3,6 +3,7 @@
 #include "list.h"
 #include "printk.h"
 #include "string.h"
+#include "signal.h"
 #include "uart.h"
 
 extern unsigned long pg_dir[512];
@@ -46,12 +47,15 @@ void sched_init() {
     // This represents the code currently running (boot/kernel_main).
     // We need this so the first schedule() has somewhere to save the old context.
     struct task_struct *idle = (struct task_struct *)kmalloc(sizeof(struct task_struct));
+    memset(idle, 0, sizeof(struct task_struct));
     
     idle->pid = 0;
     idle->state = TASK_RUNNING;
     idle->priority = 0;
     idle->counter = 0;
     idle->mm.pgd = 0; // Idle doesn't need a page table
+    idle->signal_stack_va = 0;
+    idle->signal_stack_phys = 0;
     // We don't need to set idle->thread.sp/ra because switch_to 
     // will overwrite them with the actual CPU state when we switch OUT.
     
@@ -95,9 +99,9 @@ void schedule() {
     }
 
     // Debug
-    if (prev->pid != next->pid) {
+    // if (prev->pid != next->pid) {
         // printk("[Sched] Switch: %d -> %d\n", prev->pid, next->pid);
-    }
+    // }
     // 3. Update States
     if (prev->state == TASK_RUNNING) {
         prev->state = TASK_READY;
@@ -126,6 +130,7 @@ void schedule() {
 struct task_struct *thread_create(void (*start_routine)(void *), void *arg) {
     struct task_struct *p = (struct task_struct *)kmalloc(sizeof(struct task_struct));
     if (!p) return NULL;
+    memset(p, 0, sizeof(struct task_struct));
 
     // [FIX] Use 'kernel_stack' to match struct definition in sched.h
     p->kernel_stack = (uint64_t)kmalloc(0x1000);
@@ -140,6 +145,8 @@ struct task_struct *thread_create(void (*start_routine)(void *), void *arg) {
     p->counter = 0;
     p->pending_signals = 0;
     p->in_signal_handler = 0;
+    p->signal_stack_va = 0;
+    p->signal_stack_phys = 0;
     p->mm.pgd = 0; // No user page table for kernel threads
     for (int i = 0; i < MAX_SIG; i++) {
         p->signal_handler[i] = 0;
@@ -178,6 +185,7 @@ void kill_zombies() {
             // 2. Free Memory (Uncommented!)
             // Note: Verify your struct member names match exactly (kernel_stack vs stack)
             if (task->mm.pgd) {
+                release_signal_stack(task);
                 kfree((void *)task->mm.pgd);
             }
             kfree((void *)task->kernel_stack); 
@@ -206,10 +214,13 @@ void idle() {
 struct task_struct *task_alloc() {
     struct task_struct *p = (struct task_struct *)kmalloc(sizeof(struct task_struct));
     if (!p) return NULL;
+    memset(p, 0, sizeof(struct task_struct));
 
     p->kernel_stack = (uint64_t)kmalloc(PAGE_SIZE);
     p->user_stack   = (uint64_t)kmalloc(PAGE_SIZE);
     p->mm.pgd = 0;
+    p->signal_stack_va = 0;
+    p->signal_stack_phys = 0;
 
     if (!p->kernel_stack || !p->user_stack) {
         if (p->kernel_stack) kfree((void*)p->kernel_stack);

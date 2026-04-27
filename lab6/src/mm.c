@@ -5,30 +5,28 @@
 #include "fdt.h" 
 #include "vm.h"
 #include "printk.h"
+#include "string.h"
 // If fdt.h is missing this prototype, declare it here to fix warning
 extern uint32_t fdt_totalsize(const void *fdt);
 
 // =========================================================================
 // Global Variables & SLAB Definitions
 // =========================================================================
-
-// --- SLAB Allocator Config ---
-#define CACHE_NUM 8
+// Internal SLAB configuration
 static unsigned int cache_sizes[CACHE_NUM] = {16, 32, 64, 128, 256, 512, 1024, 2048};
-
-struct kmem_cache {
-    struct list_head free_list;
-    unsigned int chunk_size;
-};
-
 struct kmem_cache caches[CACHE_NUM];
 
-// --- Buddy System Globals ---
+// Buddy System Globals
 struct page *mem_map;             
 struct free_area free_areas[MAX_ORDER + 1];
 unsigned long total_pages;
 unsigned long total_memory_size; 
 int buddy_verbose = 0; 
+
+unsigned long PHY_MEM_START = 0;
+unsigned long TOTAL_MEM_SIZE = 0;
+
+static uintptr_t bootmem_ptr = 0;
 
 // =========================================================================
 // Helpers
@@ -37,15 +35,6 @@ unsigned long page_to_pfn(struct page *page) {
     return page - mem_map;
 }
 
-// void *page_to_virt(struct page *page) {
-//     return (void *)(PHY_MEM_START + (page_to_pfn(page) << PAGE_SHIFT));
-// }
-
-// struct page *virt_to_page(void *addr) {
-//     unsigned long pfn = ((unsigned long)addr - PHY_MEM_START) >> PAGE_SHIFT;
-//     if (pfn >= total_pages) return NULL;
-//     return &mem_map[pfn];
-// }
 
 void *page_to_virt(struct page *page) {
     unsigned long pfn = page_to_pfn(page);
@@ -63,18 +52,22 @@ struct page *virt_to_page(void *addr) {
 // =========================================================================
 // Startup Allocator (Bump Allocator)
 // =========================================================================
-static uintptr_t bootmem_ptr = 0;
+// New helper to initialize the bump pointer at a safe location
+void bootmem_init(unsigned long safe_start_pa) {
+    bootmem_ptr = align_up(safe_start_pa, PAGE_SIZE);
+}
 
 void *bootmem_alloc(unsigned long size) {
-    // Initialize bootmem_ptr to the end of the kernel if not set
     if (bootmem_ptr == 0) {
-        bootmem_ptr = align_up((uintptr_t)_end, PAGE_SIZE);
+        // Fallback to kernel end if not explicitly initialized
+        bootmem_ptr = align_up(virt_to_phys((uintptr_t)_end), PAGE_SIZE);
     }
     
-    uintptr_t alloc_start = bootmem_ptr;
+    uintptr_t alloc_start_pa = bootmem_ptr;
     bootmem_ptr = align_up(bootmem_ptr + size, PAGE_SIZE);
     
-    return (void *)alloc_start;
+    // Return the virtual address for kernel use
+    return (void *)phys_to_virt(alloc_start_pa);
 }
 
 // =========================================================================
@@ -107,133 +100,139 @@ void memory_reserve(unsigned long start, unsigned long size) {
 void mm_init(void *dtb) {
     uart_puts("Initializing Memory System...\n");
 
-    // 1. Get Memory Size
-    total_memory_size = TOTAL_MEM_SIZE; // Use macro for consistency
-    // total_pages = total_memory_size / PAGE_SIZE;
-    total_pages = NUM_PAGES; // Use macro for consistency
+    // ======================================================
+    // 1. DETECT RAM BOUNDARIES (DYNAMIC)
+    // ======================================================
+    if (dtb) {
+        int mem_node = -1, depth = -1;
+        int offset = fdt_next_node(dtb, -1, &depth);
+        while (offset >= 0) {
+            int len;
+            const char *device_type = (const char *)fdt_getprop(dtb, offset, "device_type", &len);
+            if (device_type && strcmp(device_type, "memory") == 0) {
+                mem_node = offset;
+                break; 
+            }
+            offset = fdt_next_node(dtb, offset, &depth);
+        }
 
-    // 2. Allocate Page Descriptors using Startup Allocator
+        if (mem_node >= 0) {
+            int len;
+            const uint32_t *reg = fdt_getprop(dtb, mem_node, "reg", &len);
+            if (reg && len >= 16) { 
+                PHY_MEM_START = ((uint64_t)bswap32(reg[0]) << 32) | bswap32(reg[1]);
+                TOTAL_MEM_SIZE = ((uint64_t)bswap32(reg[2]) << 32) | bswap32(reg[3]);
+            }
+        }
+    }
+
+    if (TOTAL_MEM_SIZE == 0) {
+        uart_puts("Failed to read memory from DTB. Halting.\n");
+        while(1);
+    }
+
+    total_memory_size = TOTAL_MEM_SIZE; 
+    total_pages = total_memory_size / PAGE_SIZE;
+
+    // ======================================================
+    // 2. FIND SAFE START FOR STARTUP ALLOCATOR
+    // ======================================================
+    // Start with the end of the kernel image
+    unsigned long safe_start_pa = virt_to_phys((unsigned long)_end);
+
+    // Check DTB location and size
+    uint32_t dtb_size = 0;
+    unsigned long dtb_pa = 0;
+    if (dtb) {
+        dtb_pa = virt_to_phys((unsigned long)dtb);
+        dtb_size = fdt_totalsize(dtb);
+        if (dtb_pa + dtb_size > safe_start_pa) safe_start_pa = dtb_pa + dtb_size;
+    }
+
+    // Check Initrd location
+    uint64_t initrd_start = 0, initrd_end = 0;
+    if (dtb) {
+        int chosen = fdt_path_offset(dtb, "/chosen");
+        if (chosen >= 0) {
+            int ls, le;
+            const uint32_t *ps = fdt_getprop(dtb, chosen, "linux,initrd-start", &ls);
+            const uint32_t *pe = fdt_getprop(dtb, chosen, "linux,initrd-end", &le);
+            if (ps && pe) {
+                initrd_start = (ls == 8) ? (((uint64_t)bswap32(ps[0]) << 32) | bswap32(ps[1])) : bswap32(*ps);
+                initrd_end   = (le == 8) ? (((uint64_t)bswap32(pe[0]) << 32) | bswap32(pe[1])) : bswap32(*pe);
+                if (initrd_end > safe_start_pa) safe_start_pa = initrd_end;
+            }
+        }
+    }
+
+    // ======================================================
+    // 3. INITIALIZE ALLOCATOR & ALLOCATE mem_map
+    // ======================================================
+    bootmem_init(safe_start_pa);
     unsigned long mem_map_size = total_pages * sizeof(struct page);
     mem_map = (struct page *)bootmem_alloc(mem_map_size);
-    
-    uart_puts("mem_map allocated at: "); uart_hex((unsigned long)mem_map); uart_puts("\n");
 
-    // 3. Initialize all pages as FREE first
+    // Initialize Page Descriptors as FREE
     for (unsigned long i = 0; i < total_pages; i++) {
         list_init(&mem_map[i].list);
         mem_map[i].status = PAGE_FREE; 
         mem_map[i].order = 0;
         mem_map[i].cache_index = CACHE_NONE; 
+        mem_map[i].ref_count = 0;
     }
 
-    // 4. Initialize Buddy Lists
-    for (int i = 0; i <= MAX_ORDER; i++) {
-        list_init(&free_areas[i].free_list); 
-        free_areas[i].nr_free = 0;
-    }
+    // Buddy and Slab setup...
+    for (int i = 0; i <= MAX_ORDER; i++) { list_init(&free_areas[i].free_list); free_areas[i].nr_free = 0; }
+    for (int i = 0; i < CACHE_NUM; i++) { list_init(&caches[i].free_list); caches[i].chunk_size = cache_sizes[i]; }
 
-    // 5. Initialize SLAB Caches
-    for (int i = 0; i < CACHE_NUM; i++) {
-        list_init(&caches[i].free_list);
-        caches[i].chunk_size = cache_sizes[i];
-    }
-
-    // // ======================================================
-    // // RESERVATIONS
-    // // ======================================================
+    // ======================================================
+    // 4. PERFORM FORMAL RESERVATIONS
+    // ======================================================
     uart_puts("--- Performing Memory Reservations ---\n");
 
-    // // A. Reserve OS Core (OpenSBI + Kernel + Stack + mem_map)
-    // // Covers: OpenSBI (0x40000000), Kernel, Stack, and Page Descriptors
-    uart_puts("[Reserve] OS Core (OpenSBI, Kernel, Stack, mem_map)...\n"); 
-    // memory_reserve(PHY_MEM_START, (unsigned long)bootmem_ptr - PHY_MEM_START);
-    memory_reserve(PHY_MEM_START, virt_to_phys(bootmem_ptr) - PHY_MEM_START);
+    // A. Kernel
+    memory_reserve(virt_to_phys((unsigned long)_start), virt_to_phys((unsigned long)_end) - virt_to_phys((unsigned long)_start));
 
-    // B. Reserve Device Tree Blob (DTB)
+    // B. DTB
+    if (dtb) memory_reserve(dtb_pa, dtb_size);
+
+    // C. Initrd
+    if (initrd_end > initrd_start) memory_reserve(initrd_start, initrd_end - initrd_start);
+
+    // D. mem_map ITSELF (The Frame Array)
+    memory_reserve(virt_to_phys((unsigned long)mem_map), mem_map_size);
+
+    // E. /memreserve/ Block (Firmware/OpenSBI)
     if (dtb) {
-        uint32_t dtb_size = fdt_totalsize(dtb);  // dtb is VA, dereference works
-        memory_reserve(virt_to_phys((unsigned long)dtb), dtb_size);  // pass PA
-    }
-
-    // C. Reserve Initramfs
-    if (dtb) {
-        int chosen_node = fdt_path_offset(dtb, "/chosen");
-        if (chosen_node >= 0) {
-            int len_start, len_end;
-            const uint32_t *prop_start = fdt_getprop(dtb, chosen_node, "linux,initrd-start", &len_start);
-            const uint32_t *prop_end = fdt_getprop(dtb, chosen_node, "linux,initrd-end", &len_end);
-            
-            if (prop_start && prop_end) {
-                uart_puts("[Reserve] Initial Ramdisk (Initrd)...\n");
-
-                uint64_t initrd_start = 0;
-                uint64_t initrd_end = 0;
-
-                if (len_start == 8) {
-                    uint64_t hi = bswap32(prop_start[0]);
-                    uint64_t lo = bswap32(prop_start[1]);
-                    initrd_start = (hi << 32) | lo;
-                } else {
-                    initrd_start = bswap32(*prop_start);
-                }
-
-                if (len_end == 8) {
-                    uint64_t hi = bswap32(prop_end[0]);
-                    uint64_t lo = bswap32(prop_end[1]);
-                    initrd_end = (hi << 32) | lo;
-                } else {
-                    initrd_end = bswap32(*prop_end);
-                }
-
-                memory_reserve(initrd_start, initrd_end - initrd_start);
-            }
+        struct fdt_header *h = (struct fdt_header *)dtb;
+        struct fdt_reserve_entry *e = (struct fdt_reserve_entry *)((void *)dtb + bswap32(h->off_mem_rsvmap));
+        while (e->address != 0 || e->size != 0) {
+            memory_reserve(bswap64(e->address), bswap64(e->size));
+            e++;
         }
     }
 
-    // D. Reserve Hardware/Firmware Regions (Memory Reservation Block)
-    if (dtb) {
-        uart_puts("[Reserve] /memreserve/ Block (Firmware)...\n");
-        struct fdt_header *header = (struct fdt_header *)dtb;
-        
-        // Get offset of the reservation block
-        uint32_t off = bswap32(header->off_mem_rsvmap);
-        struct fdt_reserve_entry *entry = (struct fdt_reserve_entry *)((void *)dtb + off);
-        
-        // Iterate until both address and size are 0
-        while (entry->address != 0 || entry->size != 0) {
-            uint64_t rsv_addr = bswap64(entry->address);
-            uint64_t rsv_size = bswap64(entry->size);
-            
-            memory_reserve(rsv_addr, rsv_size);
-            
-            entry++;
-        }
-    }
-
-    // E. Reserve Frame Buffer (Simple Framebuffer)
-    // We reserve the top 8MB of RAM for potential display use
+    // F. Frame Buffer (Calculated from parsed TOTAL_MEM_SIZE)
     {
-        unsigned long fb_size = 0x00800000; // 8 MB
-        unsigned long fb_start = PHY_MEM_START + total_memory_size - fb_size;
+        // 1920 * 1080 * 4 is ~8.3MB, so we reserve 9MB to be safe
+        unsigned long fb_size = 0x00900000; 
+        unsigned long fb_start_pa = 0x7F700000; 
         
-        uart_puts("[Reserve] Frame Buffer (Top 8MB)...\n");
-        memory_reserve(fb_start, fb_size);
+        uart_puts("[Reserve] Frame Buffer (Aligned to 0x7F700000)...\n");
+        memory_reserve(fb_start_pa, fb_size);
     }
 
     // ======================================================
-    // Handover to Buddy System
+    // 5. HANDOVER
     // ======================================================
     uart_puts("Handing over to Buddy System...\n");
-
     for (unsigned long i = 0; i < total_pages; i++) {
         if (mem_map[i].status == PAGE_FREE) {
             mem_map[i].status = PAGE_ALLOCATED; 
             free_pages(&mem_map[i], 0);
         }
     }
-    uart_puts("Buddy System Ready.\n");
 }
-
 // =========================================================================
 // Buddy System & SLAB Implementation (Keep existing code below)
 // =========================================================================
@@ -378,4 +377,25 @@ void kfree(void *ptr) {
     struct kmem_cache *cache = &caches[cache_idx];
     struct list_head *node = (struct list_head *)ptr;
     list_add(node, &cache->free_list);
+}
+
+
+void inc_page_ref(unsigned long phys_addr) {
+    unsigned long pfn = (phys_addr - PHY_MEM_START) >> PAGE_SHIFT;
+    if (pfn < total_pages) {
+        mem_map[pfn].ref_count++;
+    }
+}
+
+void dec_page_ref(unsigned long phys_addr) {
+    unsigned long pfn = (phys_addr - PHY_MEM_START) >> PAGE_SHIFT;
+    if (pfn < total_pages) {
+        mem_map[pfn].ref_count--;
+        
+        // THE MAGIC OF CoW: Only free the memory if NO ONE is using it!
+        if (mem_map[pfn].ref_count <= 0) {
+            mem_map[pfn].ref_count = 0;
+            kfree((void *)phys_to_virt(phys_addr));
+        }
+    }
 }

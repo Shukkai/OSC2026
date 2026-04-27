@@ -69,6 +69,19 @@ void fb_init() {
     uart_puts("QEMU ramfb ready!\n");
 #else
     uart_puts("Orange Pi RV2 Hardware FB Ready at 0x7f700000.\n");
+    // [FIX]: Clear the screen to black (0x00000000)
+    unsigned int *fb_ptr = (unsigned int *)FB_ADDR;
+    for (unsigned long i = 0; i < (SCREEN_WIDTH * SCREEN_HEIGHT); i++) {
+        fb_ptr[i] = 0;
+    }
+    
+    // Ensure the zeros are flushed from cache to the physical screen
+    unsigned long start = FB_ADDR;
+    unsigned long end = FB_ADDR + (SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+    for (unsigned long addr = start; addr < end; addr += 64) {
+        asm volatile("cbo.clean 0(%0)" :: "r"(addr) : "memory");
+    }
+    __sync_synchronize();
 #endif
     
 }

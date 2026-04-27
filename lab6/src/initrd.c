@@ -107,8 +107,7 @@ void initrd_cat(const char *target_filename) {
     uart_puts("File not found.\n");
 }
 
-static struct task_struct *create_user_task(uintptr_t content_start,
-                                             unsigned long filesize) {
+static struct task_struct *create_user_task(uintptr_t content_start, unsigned long filesize) {
     struct task_struct *task = task_alloc();
     if (!task) return NULL;
 
@@ -122,10 +121,10 @@ static struct task_struct *create_user_task(uintptr_t content_start,
     if (!user_pgd) { kfree((void*)task->kernel_stack); kfree((void*)task->user_stack); kfree(task); return NULL; }
 
     for (int i = 0; i < 512; i++) user_pgd[i] = 0;
-
     for (int i = 256; i < 512; i++) user_pgd[i] = pg_dir[i];
 
     task->mm.pgd = user_pgd;
+    INIT_LIST_HEAD(&task->mm.mmap_list);
 
     // --- 2. Map text at VA 0x0 ---
     unsigned long text_pages = (filesize + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -143,39 +142,55 @@ static struct task_struct *create_user_task(uintptr_t content_start,
         for (unsigned long j = copy_len; j < PAGE_SIZE; j++)
             prog_buf[j] = 0;
         
+        unsigned long prog_pa = virt_to_phys((unsigned long)prog_buf);
+        
+        // [FIX 1]: Added PAGE_WRITE so the program can modify its .data segment!
         map_pages(user_pgd, 0x0 + i * PAGE_SIZE,
-                  virt_to_phys((unsigned long)prog_buf), PAGE_SIZE,
-                  PAGE_PRESENT | PAGE_READ | PAGE_EXEC | PAGE_USER | PAGE_ACCESSED | PAGE_DIRTY);
-    }
-
-
-    // --- 3. Map stack: 4 pages at 0x3fffffc000 ---
-    // for (int i = 0; i < 4; i++) {
-    //     char *sp = (char *)kmalloc(PAGE_SIZE);
-    //     if (!sp) { kfree(user_pgd); kfree((void*)task->kernel_stack); kfree((void*)task->user_stack); kfree(task); return NULL; }
-    //     map_pages(user_pgd, 0x3fffffc000UL + i * PAGE_SIZE,
-    //               virt_to_phys((unsigned long)sp), PAGE_SIZE,
-    //               PAGE_PRESENT | PAGE_READ | PAGE_WRITE | PAGE_USER | PAGE_ACCESSED | PAGE_DIRTY);
-    // }
-    for (int i = 0; i < 4; i++) {
-        char *sp = (char *)kmalloc(PAGE_SIZE);
-        if (!sp) { kfree(user_pgd); kfree((void*)task->kernel_stack); kfree((void*)task->user_stack); kfree(task); return NULL; }
-        map_pages(user_pgd, 0x3fffffc000UL + i * PAGE_SIZE,
-                  virt_to_phys((unsigned long)sp), PAGE_SIZE,
+                  prog_pa, PAGE_SIZE,
                   PAGE_PRESENT | PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_USER | PAGE_ACCESSED | PAGE_DIRTY);
+
+        inc_page_ref(prog_pa);
     }
 
+    // ==========================================================
+    // --- 3. CREATE THE TEXT VMA WITH BSS PADDING ---
+    // ==========================================================
+    struct vm_area_struct *text_vma = (struct vm_area_struct *)kmalloc(sizeof(struct vm_area_struct));
+    if (text_vma) {
+        text_vma->vm_start = 0x0;
+        text_vma->vm_end   = (text_pages * PAGE_SIZE) + (4 * PAGE_SIZE); 
+        text_vma->vm_mm    = &task->mm;
+        text_vma->vm_flags = VM_READ | VM_WRITE | VM_EXEC; 
+        text_vma->vm_file  = 0;
+        
+        list_add_tail(&text_vma->list, &task->mm.mmap_list);
+    }
 
+    // ==========================================================
+    // --- 4. CREATE THE STACK VMA (Lazy Promise) ---
+    // ==========================================================
+    // [FIX 2]: Restored the missing Stack VMA!
+    struct vm_area_struct *stack_vma = (struct vm_area_struct *)kmalloc(sizeof(struct vm_area_struct));
+    if (stack_vma) {
+        stack_vma->vm_start = 0x3fffffc000UL;
+        stack_vma->vm_end   = 0x4000000000UL; 
+        stack_vma->vm_mm    = &task->mm;
+        stack_vma->vm_flags = VM_READ | VM_WRITE | VM_EXEC;
+        stack_vma->vm_file  = 0;
+        
+        list_add_tail(&stack_vma->list, &task->mm.mmap_list);
+    }
 
+    // --- 5. TrapFrame & Kernel Context ---
     task->tf = (struct TrapFrame *)(task->kernel_stack + PAGE_SIZE - sizeof(struct TrapFrame));
     memset(task->tf, 0, sizeof(struct TrapFrame));
     task->tf->sepc    = 0x0;
     task->tf->sp      = 0x4000000000UL;
     task->tf->sstatus = (1 << 5);
 
-    // --- 5. Kernel context ---
     task->thread.ra = (uint64_t)ret_from_exception;
     task->thread.sp = (uint64_t)task->tf;
+    
     return task;
 }
 
@@ -201,8 +216,9 @@ void initrd_exec(const char *target_filename) {
             (uintptr_t)p + sizeof(struct cpio_newc_header) + namesize, 4);
 
         if (strcmp(filename, target_filename) == 0) {
+            disable_interrupt();
             uart_puts("Loading '"); uart_puts(filename); uart_puts("'...\n");
-
+            enable_interrupt();
             struct task_struct *task = create_user_task(content_start, filesize);
             if (!task) { uart_puts("Error: OOM\n"); return; }
 
@@ -232,121 +248,6 @@ void initrd_exec(const char *target_filename) {
     }
     uart_puts("File not found: "); uart_puts(target_filename); uart_puts("\n");
 }
-
-// void initrd_exec(const char *target_filename) {
-//     char *archive = (char *)get_initrd_base();
-//     if (!archive) {
-//         uart_puts("Error: Initrd not found.\n");
-//         return;
-//     }
-
-//     char *p = archive;
-    
-//     while (1) {
-//         struct cpio_newc_header *header = (struct cpio_newc_header *)p;
-        
-//         if (strncmp(header->c_magic, CPIO_NEWC_MAGIC, 6) != 0) {
-//             uart_puts("Error: Invalid CPIO Magic\n");
-//             return;
-//         }
-
-//         unsigned long namesize = parse_hex8(header->c_namesize);
-//         unsigned long filesize = parse_hex8(header->c_filesize);
-//         char *filename = p + sizeof(struct cpio_newc_header);
-
-//         if (strcmp(filename, "TRAILER!!!") == 0) break;
-
-//         uintptr_t content_start = align_up((uintptr_t)p + sizeof(struct cpio_newc_header) + namesize, 4);
-        
-//         if (strcmp(filename, target_filename) == 0) {
-//             // 1. Create a REAL task for the user program
-//             struct task_struct *task = task_alloc();
-//             uart_puts("[ie] ks="); uart_hex(task->kernel_stack); uart_puts("\n");
-// uart_puts("[ie] tf="); uart_hex(task->kernel_stack + PAGE_SIZE - sizeof(struct TrapFrame)); uart_puts("\n");
-//             if (!task) {
-//                 uart_puts("Error: Out of Memory for Task\n");
-//                 return;
-//             }
-//             uart_puts("[dbg] kernel_stack="); uart_hex(task->kernel_stack); uart_puts("\n");
-
-//             task->pid = pid_counter++;
-//             task->state = TASK_READY;
-//             task->priority = current->priority; // Inherit priority
-//             task->counter = 0;
-
-//              // --- 1. Allocate user page table ---
-//             unsigned long *user_pgd = (unsigned long *)kmalloc(PAGE_SIZE);
-//             for (int i = 0; i < 512; i++) user_pgd[i] = 0;
-
-//             // Copy kernel mappings (upper half)
-//             for (int i = 256; i < 512; i++)
-//                 user_pgd[i] = pg_dir[i];
-
-//             task->mm.pgd = user_pgd;
-
-//             // --- 2. Map user text at VA 0x0 ---
-//             char *prog_buf = (char *)kmalloc(PAGE_SIZE);
-//             char *src = (char *)content_start;
-//             for (unsigned long i = 0; i < filesize; i++)
-//                 prog_buf[i] = src[i];
-
-//             unsigned long prog_pa = virt_to_phys((unsigned long)prog_buf);
-//             unsigned long text_flags = PAGE_PRESENT | PAGE_READ | PAGE_EXEC |
-//                                     PAGE_USER | PAGE_ACCESSED | PAGE_DIRTY;
-//             map_pages(user_pgd, 0x0, prog_pa, PAGE_SIZE, text_flags);
-
-//             // --- 3. Map user stack: 4 pages at 0x3fffffc000 ---
-//             unsigned long stack_flags = PAGE_PRESENT | PAGE_READ | PAGE_WRITE |
-//                                         PAGE_USER | PAGE_ACCESSED | PAGE_DIRTY;
-//             for (int i = 0; i < 4; i++) {
-//                 char *sp = (char *)kmalloc(PAGE_SIZE);
-//                 unsigned long sp_pa = virt_to_phys((unsigned long)sp);
-//                 map_pages(user_pgd, 0x3fffffc000UL + i * PAGE_SIZE,
-//                         sp_pa, PAGE_SIZE, stack_flags);
-//             }
-
-//             // --- 4. Setup TrapFrame ---
-//             task->tf = (struct TrapFrame *)(task->kernel_stack + PAGE_SIZE - sizeof(struct TrapFrame));
-//             char *tf_bytes = (char *)task->tf;
-//             for (unsigned int i = 0; i < sizeof(struct TrapFrame); i++)
-//                 tf_bytes[i] = 0;
-
-//             task->tf->sepc = 0x0;              // entry at user VA 0x0
-//             task->tf->sp = 0x4000000000UL;     // top of user stack
-//             task->tf->sstatus = (1 << 5);      // SPIE=1, SPP=0 (user mode)
-
-//             // --- 5. Kernel context for switch_to ---
-//             task->thread.ra = (uint64_t)ret_from_exception;
-//             task->thread.sp = (uint64_t)task->tf;
-
-//             // --- 6. Schedule ---
-//             disable_interrupt();
-//             list_add_tail(&task->list, &runqueue);
-//             enable_interrupt();
-
-//             // printk("[exec] PID %d added, state=%d\n", task->pid, task->state);
-//             uart_puts("[exec] PID "); uart_hex(task->pid); uart_puts(" scheduled\n");
-
-//              // --- 7. Wait for the process to exit (become ZOMBIE) ---
-//              disable_interrupt();
-//              while (task->state != TASK_ZOMBIE) {
-//                  schedule();
-//              }
-//             enable_interrupt();
-//             while (task->state != TASK_ZOMBIE) {
-//                 schedule();
-//                 enable_interrupt();
-//             }
-//             enable_interrupt();
-//             uart_puts("Process Exited. Returning to shell...\n");
-//             return;
-// }
-
-//         uintptr_t next = align_up(content_start + filesize, 4);
-//         p = (char *)next;
-//     }
-//     uart_puts("File not found: "); uart_puts(target_filename); uart_puts("\n");
-// }
 
 
 void *initrd_find_file(const char *target_filename, unsigned long *out_filesize) {

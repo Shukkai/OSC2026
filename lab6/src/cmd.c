@@ -43,44 +43,72 @@ void demo_sched() {
     uart_puts("All tasks done.\n");
 }
 
-void task_heavy_work(void *arg) {
-    char *name = (char *)arg;
-    
-    uart_puts("\n[Start] "); uart_puts(name); uart_puts("\n");
-    
-    // Print dots slowly to visualize time passing
-    for (int i = 0; i < 10; i++) {
-        uart_puts(name); 
-        uart_puts(".");
-        
-        // Busy Wait (approx 200ms) - DOES NOT YIELD CPU!
-        // We use this to force the CPU to stay in this function.
-        // If interrupts were disabled, the system would freeze here.
-        // Since interrupts are ENABLED (task_run), UART IRQs should still work!
-        for(volatile int j=0; j<50000000; j++); 
-    }
-    
-    uart_puts("\n[End] "); uart_puts(name); uart_puts("\n");
+/* ========================================================================= */
+/* DEMO FUNCTIONS                                                            */
+/* ========================================================================= */
+
+/* ========================================================================= */
+/* DEMO FUNCTIONS                                                            */
+/* ========================================================================= */
+
+int priority_set[4];
+
+void p1_callback(void *arg) {
+    (void)arg;
+    uart_puts("P1 start\n");
+    uart_puts("P1 end\n");
 }
+
+void p3_callback(void *arg) {
+    (void)arg;
+    uart_puts("P3 start\n");
+    task_add(p1_callback, NULL, priority_set[0]);
+    
+    // 使用 timer 觸發中斷來達成 preemption
+    timer_add(NULL, NULL, 0); 
+    
+    uart_puts("P3 end\n");
+}
+
+void p2_callback(void *arg) {
+    (void)arg;
+    uart_puts("P2 start\n");
+    task_add(p3_callback, NULL, priority_set[2]);
+    
+    timer_add(NULL, NULL, 0); 
+    
+    uart_puts("P2 end\n");
+}
+
+void p4_callback(void *arg) {
+    (void)arg;
+    uart_puts("P4 start\n");
+    task_add(p2_callback, NULL, priority_set[1]);
+    
+    timer_add(NULL, NULL, 0); 
+    
+    uart_puts("P4 end\n");
+}
+
 void demo_task() {
     uart_puts("\n=== TASK QUEUE & PREEMPTION TEST ===\n");
     
-    // CRITICAL: Disable interrupts so we   can queue BOTH tasks 
-    // before the Timer (Scheduler) picks one.
+    int from_small_to_big = 1; // set to 0 if the task with a smaller number has a higher priority
+    if (from_small_to_big) {
+        priority_set[0] = 10;
+        priority_set[1] = 20;
+        priority_set[2] = 30;
+        priority_set[3] = 40;
+    } else {
+        priority_set[0] = 40;
+        priority_set[1] = 30;
+        priority_set[2] = 20;
+        priority_set[3] = 10;
+    }
+
+    // Disable interrupts to queue the first task atomically
     disable_interrupt();
-
-    uart_puts("1. Queuing 'Task Low' (Priority Normal)...\n");
-    task_add(task_heavy_work, "Low", PRIORITY_NORMAL);
-
-    uart_puts("2. Queuing 'Task High' (Priority High)...\n");
-    task_add(task_heavy_work, "High", PRIORITY_HIGH);
-
-    uart_puts("---------------------------------------------------\n");
-    uart_puts("Tasks queued atomically. Re-enabling interrupts...\n");
-    uart_puts("EXPECTATION: 'High' runs first, then 'Low'.\n");
-    uart_puts("---------------------------------------------------\n");
-
-    // Enable Interrupts -> Timer Fires -> task_run() sees both -> Picks High
+    task_add(p4_callback, NULL, priority_set[3]);
     enable_interrupt();
 }
 
@@ -379,14 +407,15 @@ void exec_command(char *buf)
     else if (strncmp(buf, "exec", 4) == 0) {
         char *arg = buf + 4;
         while (*arg == ' ') arg++;
-        if (*arg == '\0') arg = "osctest.bin";
-
-        uart_puts("No file specified. Defaulting to '");
-        uart_puts(arg);
-        uart_puts("'...\nLoading '");
-        uart_puts(arg);
-        uart_puts("'...\n");
-
+        if (*arg == '\0'){
+            arg = "osctest.bin";
+            disable_interrupt();
+            uart_puts("No file specified. Defaulting to '");
+            uart_puts(arg);
+            uart_puts("'\n");
+            enable_interrupt();
+        }
+        
         initrd_exec(arg);  // creates user task, waits for it to finish
         
     }

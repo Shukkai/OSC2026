@@ -5,10 +5,9 @@
 #include "list.h"
 #include "trap.h"
 #include "vm.h"
+#include "signal.h"
 
 #define MAX_SIG 32
-#define SIGTERM 15  `
-
 struct thread_struct {
     uint64_t ra;
     uint64_t sp;
@@ -43,6 +42,8 @@ struct task_struct {
     unsigned int pending_signals;          // Bitmask of waiting signals
     struct TrapFrame saved_tf;             // Saved state before handling signal
     int in_signal_handler;                 // Prevents nested signal loops
+    unsigned long signal_stack_va;         // Temporary user signal stack mapping
+    unsigned long signal_stack_phys;       // Backing page for the signal stack
 
     // page table for user processes (NULL for kernel threads)
     struct mm_struct mm;
