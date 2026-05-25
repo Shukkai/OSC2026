@@ -1,9 +1,9 @@
 SECTIONS
 {
-    . = KERNEL_BASE;                          /* 0xffffffc080200000 */
+    . = KERNEL_BASE;                          /* higher-half VMA */
     PROVIDE(_start = .);
 
-    .text : AT(0x80200000) {
+    .text : AT(PHYS_BASE) {                    /* physical load address (LMA) */
         KEEP(*(.text.boot))
         *(.text .text.*)
     }

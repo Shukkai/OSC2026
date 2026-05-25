@@ -13,11 +13,17 @@
 /*   pmd_id[i]      : PMD for identity 0..4GiB (dropped after boot)   */
 /*   pte_uart       : PTE for the 2 MiB block containing UART_BASE    */
 /* ------------------------------------------------------------------ */
+/* GiB of physical RAM mapped into the higher-half kernel window.       */
+/* Must cover the board's top of RAM (Orange Pi RV2 ships up to 8 GiB). */
+/* The temporary identity map below stays at 4 GiB — it only needs to   */
+/* cover the kernel load address during boot and is dropped afterwards. */
+#define KERN_MAP_GIB 8
+
 unsigned long __attribute__((section(".data"), aligned(PAGE_SIZE)))
     pg_dir[512] = { 0 };
 
 static unsigned long __attribute__((section(".data"), aligned(PAGE_SIZE)))
-    pmd_kern[4][512] = { { 0 } };
+    pmd_kern[KERN_MAP_GIB][512] = { { 0 } };
 
 static unsigned long __attribute__((section(".data"), aligned(PAGE_SIZE)))
     pmd_id[4][512] = { { 0 } };
@@ -38,22 +44,34 @@ static unsigned long __attribute__((section(".data"), aligned(PAGE_SIZE)))
 void setup_vm(void)
 {
     /*
-     * Step 1: fill four PMD tables, each describing 1 GiB of
-     * physical memory in 2 MiB strides. We build two parallel sets:
-     * one for the higher-half kernel window, one for the temporary
-     * identity map. Same contents, different PGD slots.
+     * Step 1a: higher-half kernel window. Fill KERN_MAP_GIB PMD tables,
+     * each describing 1 GiB of physical memory in 2 MiB strides, so the
+     * whole of the board's RAM is reachable via phys_to_virt(). This is
+     * what lets kmalloc hand out pages above 4 GiB on real hardware.
+     */
+    for (int i = 0; i < KERN_MAP_GIB; i++) {
+        for (unsigned long j = 0; j < 512; j++) {
+            unsigned long pa = ((unsigned long)i << PGD_SHIFT)
+                             + (j * MPAGE_SIZE);
+            pmd_kern[i][j] = PA_TO_PTE(pa, PAGE_KERNEL);
+        }
+        /* PC-relative `auipc` => `(unsigned long)pmd_kern[i]` IS a PA */
+        pg_dir[256 + i] = PA_TO_PTE((unsigned long)pmd_kern[i], PAGE_VALID);
+    }
+
+    /*
+     * Step 1b: temporary identity map, first 4 GiB only. It just has to
+     * cover the kernel load address (and page tables) while the MMU is
+     * brought up; drop_identity_map() tears it down once the PC is in
+     * higher-half VA space.
      */
     for (int i = 0; i < 4; i++) {
         for (unsigned long j = 0; j < 512; j++) {
             unsigned long pa = ((unsigned long)i << PGD_SHIFT)
                              + (j * MPAGE_SIZE);
-            pmd_kern[i][j] = PA_TO_PTE(pa, PAGE_KERNEL);
-            pmd_id[i][j]   = PA_TO_PTE(pa, PAGE_KERNEL);
+            pmd_id[i][j] = PA_TO_PTE(pa, PAGE_KERNEL);
         }
-
-        /* PC-relative `auipc` => `(unsigned long)pmd_kern[i]` IS a PA */
-        pg_dir[256 + i] = PA_TO_PTE((unsigned long)pmd_kern[i], PAGE_VALID);
-        pg_dir[i]       = PA_TO_PTE((unsigned long)pmd_id[i],   PAGE_VALID);
+        pg_dir[i] = PA_TO_PTE((unsigned long)pmd_id[i], PAGE_VALID);
     }
 
     /*
@@ -117,7 +135,7 @@ void drop_identity_map(void)
 void clone_kernel_pgd(unsigned long *new_pgd)
 {
     for (int i = 0; i < 512; i++) new_pgd[i] = 0;
-    for (int i = 256; i < 260; i++) new_pgd[i] = pg_dir[i];
+    for (int i = 256; i < 256 + KERN_MAP_GIB; i++) new_pgd[i] = pg_dir[i];
 }
 
 unsigned long *pagewalk(unsigned long *pgd, unsigned long va, int alloc)
@@ -160,11 +178,6 @@ extern void do_exit(int status);
 void handle_page_fault(struct TrapFrame *tf, unsigned long exception_code) {
     unsigned long fault_addr = tf->stval;
     unsigned long page_addr = fault_addr & ~(PAGE_SIZE - 1); 
-
-    // [DEBUG] Print fault info
-    // uart_puts("\n[DEBUG] FAULT! Addr: "); uart_hex(fault_addr);
-    // uart_puts(" Code: "); uart_hex(exception_code);
-    // uart_puts(" PC: "); uart_hex(tf->sepc); uart_puts("\n");
 
     // 1. Check the VMA list
     struct vm_area_struct *vma = NULL;

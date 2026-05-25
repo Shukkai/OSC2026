@@ -12,6 +12,7 @@
 #include "sched.h"
 #include "fb.h"
 #include "vm.h"
+#include "vfs.h"
 /* Global variables to store boot information */
 unsigned long boot_cpu_hartid;
 unsigned long DTB_BASE;
@@ -39,7 +40,6 @@ int start_kernel(unsigned long hartid, unsigned long dtb)
     } else {
         uart_puts("UART Base using default value (DTB lookup failed)\n");
     }
-    // mm_init((void *)dtb);
     mm_init((void *)phys_to_virt(dtb));
     task_init();
     sched_init();
@@ -49,19 +49,10 @@ int start_kernel(unsigned long hartid, unsigned long dtb)
     uart_enable_interrupt();
     timer_init((void *)phys_to_virt(dtb));
     enable_interrupt();
-    drop_identity_map();    
-
-    // uart_puts_async("Interrupts Enabled. Buffered I/O check.\n");
-    // uart_puts("Start at ");
-    // uart_hex((unsigned long)_start);
-    // uart_puts("\npg_dir: ");
-    // uart_hex((unsigned long)pg_dir);
-    // uart_puts("\nsatp: ");
-
-    // unsigned long val;
-    // asm volatile("csrr %0, satp" : "=r"(val));
-    // uart_hex(val);
-    cmd_init();
+       
+    vfs_init();
+    drop_identity_map();
+    cmd_init(); 
     run_shell();
     return 0;
 }
